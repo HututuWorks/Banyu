@@ -2,7 +2,7 @@
 set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "$script_dir/common.sh"
-suites=(core settings qwen speech-service speech-playback replacement analysis analysis-session study-layout pinyin)
+suites=(core settings qwen speech-service speech-playback audio-player replacement analysis analysis-session study-layout pinyin)
 case "${1:-}" in
   "") ;;
   --ui) suites+=(keyboard-lifecycle speech-surface app-ui) ;;

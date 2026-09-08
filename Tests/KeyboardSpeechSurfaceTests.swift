@@ -8,10 +8,13 @@ private struct SpeechSurfaceFailure: Error { let message: String }
 @MainActor
 private enum SpeechSurfaceChecks {
     static var assertions = 0
-    static let english = "I'd like to set up an agent platform for research, though it might be quite resource-intensive. I'll make it up to you later and throw in some extra perks."
+    static let english = "I’d like to set up an agent platform for research, though it might be quite resource-intensive. I'll make it up to you later and throw in some extra perks."
     static let analysis = SentenceAnalysis(kind: "sentence", overview: "先表达计划，再说明顾虑与补偿。", insights: [
-        .init(source: "I'd like to", title: "委婉地表达想法", explanation: "would like to 后接动词原形，用来表达想做的事。")
-    ], expressions: [.init(text: "set up", source: "set up", meaning: "建立、搭建")])
+        .init(source: "I’d like to", title: "委婉地表达想法", explanation: "would like to 后接动词原形，用来表达想做的事。")
+    ], expressions: [
+        .init(text: "set up", source: "set up", meaning: "建立、搭建"),
+        .init(text: "make it up to someone", source: "make it up to you", meaning: "补偿某人", usage: "说出实际对象时，用 you、him 等替换 someone。")
+    ])
     static var directory: URL {
         URL(fileURLWithPath: ProcessInfo.processInfo.environment["EHK_SPEECH_UI_OUTPUT"]!)
     }
@@ -45,6 +48,223 @@ private enum SpeechSurfaceChecks {
         }
         guard let png = image.pngData() else { throw SpeechSurfaceFailure(message: "PNG rendering failed") }
         try png.write(to: directory.appendingPathComponent(name + ".png"))
+    }
+
+    /// Uses UIKit's laid-out character rectangles, rather than estimating text
+    /// width from a font. These coordinates exercise the production tap path.
+    static func characterPoint(in textView: UITextView, at offset: Int) throws -> CGPoint {
+        guard let start = textView.position(from: textView.beginningOfDocument, offset: offset),
+              let end = textView.position(from: start, offset: 1),
+              let range = textView.textRange(from: start, to: end) else {
+            throw SpeechSurfaceFailure(message: "Missing text position at \(offset)")
+        }
+        let rect = textView.firstRect(for: range)
+        try expect(!rect.isEmpty && !rect.isInfinite && !rect.isNull,
+                   "UIKit laid out character offset\(offset), rect\(rect), bounds\(textView.bounds), text\(textView.text ?? "nil")")
+        return CGPoint(x: rect.midX, y: rect.midY)
+    }
+
+    static func checkStudyReading(root: UIView, surface: KeyboardSurface, prefix: String) throws {
+        let original: StudyReadingTextView = try descendant(surface, "keyboard.analysisOriginal")
+        let studyScroll: UIScrollView = try descendant(surface, "keyboard.analysisScroll")
+        let sentenceSpeaker: UIButton = try descendant(surface, "keyboard.speechToggle")
+        let expressionSpeaker: UIButton = try descendant(surface, "keyboard.analysisExpressionSpeaker.1")
+        let expressionLabel: UILabel = try descendant(surface, "keyboard.analysisExpressionText.1")
+        let selectionButton: UIButton = try descendant(surface, "keyboard.analysisReadSelectionButton")
+        let readingHint: UIView = try descendant(surface, "keyboard.analysisReadingHint")
+        let originalText = english as NSString
+        var snippets: [String] = []
+        var hostActions = 0
+        surface.onReadAnalysisText = { snippets.append($0) }
+        surface.onAction = { _ in hostActions += 1 }
+        surface.onUseEnglish = { hostActions += 1 }
+        surface.onUndoEnglish = { hostActions += 1 }
+
+        surface.setSpeech(available: true, state: .idle, text: nil, english: english)
+        layout(root, surface)
+        try expect(original.text == english, "\(prefix): selectable original preserves every character")
+        try expect(!original.isEditable && !original.isScrollEnabled && original.isSelectable,
+                   "\(prefix): original is selectable, cannot edit, and shares the outer scroller")
+        let font = original.attributedText.attribute(.font, at: 0, effectiveRange: nil) as? UIFont
+        let paragraph = original.attributedText.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle
+        try expect(font?.pointSize == 18 && font?.fontDescriptor.symbolicTraits.contains(.traitBold) == false,
+                   "\(prefix): learning English keeps18pt regular")
+        try expect(paragraph?.minimumLineHeight == 28 && paragraph?.maximumLineHeight == 28,
+                   "\(prefix): selectable original retains28pt reading rhythm")
+        try expect(original.contentSize.width <= original.bounds.width + 1 && original.bounds.height > 84,
+                   "\(prefix): long original wraps naturally without horizontal text scrolling")
+        let firstWordPoint = try characterPoint(in: original, at: 0)
+        try expect(expressionLabel.text == "make it up to someone" && !expressionSpeaker.isHidden,
+                   "\(prefix): reusable pattern retains its visible phrase speaker")
+        try expect(expressionSpeaker.bounds.width >= 44 && expressionSpeaker.bounds.height >= 44,
+                   "\(prefix): phrase speaker has a44pt touch target")
+        try expect(expressionLabel.frame.maxX <= expressionSpeaker.frame.minX,
+                   "\(prefix): phrase title does not overlap its speaker")
+
+        for token in ["I’d", "I'll", "resource-intensive", "research"] {
+            let expectedRange = originalText.range(of: token)
+            try expect(expectedRange.location != NSNotFound, "fixture contains\(token)")
+            // Every character, including apostrophe/hyphen, should read the
+            // complete lexical item even when the compound spans a line.
+            for offset in expectedRange.location ..< NSMaxRange(expectedRange) {
+                let point = try characterPoint(in: original, at: offset)
+                let range = original.readingRange(at: point)
+                try expect(range == expectedRange, "\(prefix): \(token) stays whole atUTF16 offset\(offset)")
+                original.readWord(at: point)
+                try expect(snippets.last == token, "\(prefix): point dispatches exact original token\(token)")
+            }
+        }
+        let gap = originalText.range(of: " like").location
+        let gapPoint = try characterPoint(in: original, at: gap)
+        let count = snippets.count
+        try expect(original.readingRange(at: gapPoint) == nil, "\(prefix): inter-word whitespace is not a word")
+        original.readWord(at: gapPoint)
+        for mark in [",", "."] {
+            let markPoint = try characterPoint(in: original, at: originalText.range(of: mark).location)
+            try expect(original.readingRange(at: markPoint) == nil, "\(prefix): isolated punctuation is not a word")
+            original.readWord(at: markPoint)
+        }
+        original.readWord(at: CGPoint(x: -8, y: 8))
+        original.readWord(at: CGPoint(x: 8, y: original.bounds.maxY + 10))
+        try expect(snippets.count == count, "\(prefix): whitespace/outside text never speaks nearest word")
+
+        let unselectedSize = studyScroll.contentSize
+        let unselectedOffset = studyScroll.contentOffset
+        let beforeSelection = snippets.count
+        try expect(selectionButton.isHidden && readingHint.bounds.height == 44,
+                   "\(prefix): an unselected original reserves one stable hint row")
+        original.selectedRange = originalText.range(of: " an agent platform ")
+        layout(root, surface)
+        try expect(!selectionButton.isHidden && selectionButton.isEnabled && selectionButton.bounds.height == 44,
+                   "\(prefix): native selection reveals a visible44pt read-selection button")
+        try expect(snippets.count == beforeSelection && studyScroll.contentSize == unselectedSize && studyScroll.contentOffset == unselectedOffset,
+                   "\(prefix): selection alone neither speaks nor changes reading geometry")
+        selectionButton.sendActions(for: .touchUpInside)
+        try expect(snippets.last == "an agent platform" && hostActions == 0 && original.text == english,
+                   "\(prefix): visible selection action reads exact source without dispatching input or replacement")
+        try render(surface, name: prefix + "-study-selection")
+        let menu = original.textView(original, editMenuForTextIn: original.selectedRange, suggestedActions: [])
+        let readSelection = menu?.children.compactMap { $0 as? UIAction }.first { $0.title == "朗读所选" }
+        try expect(readSelection != nil, "\(prefix): native text-selection menu exposes read action")
+        original.readSelectedText()
+        try expect(snippets.last == "an agent platform" && original.highlightedRange == originalText.range(of: "an agent platform"),
+                   "\(prefix): arbitrary selected phrase uses original text and trims surrounding space")
+        if let readSelection {
+            let menuInvoker = UIButton(type: .system)
+            menuInvoker.addAction(readSelection, for: .touchUpInside)
+            original.selectedRange = originalText.range(of: "throw in some extra perks")
+            menuInvoker.sendActions(for: .touchUpInside)
+            try expect(snippets.last == "throw in some extra perks", "\(prefix): menu reads current selection rather than stale menu range")
+            selectionButton.sendActions(for: .touchUpInside)
+            try expect(snippets.last == "throw in some extra perks", "\(prefix): visible button also follows the current selection")
+        }
+        original.clearSelection()
+        let selectionCount = snippets.count
+        original.readSelectedText()
+        selectionButton.sendActions(for: .touchUpInside)
+        try expect(selectionButton.isHidden, "\(prefix): clearing selection restores the quiet hint")
+        original.selectedRange = originalText.range(of: ",")
+        original.readSelectedText()
+        selectionButton.sendActions(for: .touchUpInside)
+        try expect(selectionButton.isHidden, "\(prefix): punctuation-only selection cannot expose a read action")
+        try expect(snippets.count == selectionCount, "\(prefix): empty or punctuation-only selection cannot speak")
+        original.clearSelection()
+        layout(root, surface)
+        try expect(studyScroll.contentSize == unselectedSize && studyScroll.contentOffset == unselectedOffset && hostActions == 0,
+                   "\(prefix): selection/clear cycles keep layout and host actions unchanged")
+
+        expressionSpeaker.sendActions(for: .touchUpInside)
+        try expect(snippets.last == "make it up to you", "\(prefix): phrase speaker reads source, never template placeholders")
+        studyScroll.setContentOffset(CGPoint(x: 0, y: 65), animated: false)
+        let oldSize = studyScroll.contentSize
+        for state in [SpeechPlaybackSession.State.loading, .playing, .idle] {
+            surface.setSpeech(available: true, state: state, text: "make it up to you", english: english)
+            layout(root, surface)
+            let sameOriginal: StudyReadingTextView = try descendant(surface, "keyboard.analysisOriginal")
+            try expect(sameOriginal === original && studyScroll.contentOffset.y == 65 && studyScroll.contentSize == oldSize,
+                       "\(prefix): snippet state updates preserve original view and scroll geometry")
+            try expect(sentenceSpeaker.accessibilityLabel == "朗读英文",
+                       "\(prefix): snippet activity cannot masquerade as whole-sentence playback")
+            try expect(original.highlightedRange == originalText.range(of: "make it up to you"),
+                       "\(prefix): playback focuses the actual spoken phrase inside the original")
+        }
+        surface.setSpeech(available: true, state: .playing, text: "make it up to you", english: english)
+        layout(root, surface)
+        let speakerContentY = expressionSpeaker.convert(.zero, to: studyScroll).y
+        let phraseOffset = min(max(0, studyScroll.contentSize.height - studyScroll.bounds.height),
+                               max(0, speakerContentY - 180))
+        studyScroll.setContentOffset(CGPoint(x: 0, y: phraseOffset), animated: false)
+        try render(surface, name: prefix + "-study-expression")
+        surface.setSpeech(available: false, state: .idle, text: nil, english: english)
+        layout(root, surface)
+        let unavailableCount = snippets.count
+        expressionSpeaker.sendActions(for: .touchUpInside)
+        selectionButton.sendActions(for: .touchUpInside)
+        original.readWord(at: firstWordPoint)
+        try expect(expressionSpeaker.isHidden && selectionButton.isHidden && snippets.count == unavailableCount,
+                   "\(prefix): unavailable provider disables both word and phrase dispatch")
+
+        surface.setSpeech(available: true, state: .idle, text: nil, english: english)
+        original.selectedRange = originalText.range(of: "an agent platform")
+        surface.setAnalysis(available: true, expanded: false, english: english, state: .ready(analysis))
+        surface.frame.size.height = 260
+        layout(root, surface)
+        let closedCount = snippets.count
+        expressionSpeaker.sendActions(for: .touchUpInside)
+        selectionButton.sendActions(for: .touchUpInside)
+        original.readWord(at: firstWordPoint)
+        try expect(snippets.count == closedCount, "\(prefix): collapsed learning cannot dispatch hidden controls")
+        try expect(original.selectedRange.length == 0 && !original.isFirstResponder,
+                   "\(prefix): collapsing learning clears native selection and focus")
+        surface.frame.size.height = 440
+        surface.setAnalysis(available: true, expanded: true, english: english, state: .ready(analysis))
+        layout(root, surface)
+        try expect(studyScroll.contentOffset == .zero && studyScroll.bounds.height > 300,
+                   "\(prefix): reopening starts at top with a full learning viewport")
+        try expect(studyScroll.contentSize == oldSize && original.frame.minY >= 0,
+                   "\(prefix): collapse/reopen preserves complete content height and top placement")
+        surface.setSpeech(available: false, state: .idle, text: nil, english: english)
+        surface.setSpeech(available: true, state: .idle, text: nil, english: english)
+        layout(root, surface)
+        try render(surface, name: prefix + "-study-tap")
+
+        // Analysis can finish while the user is already selecting/reading the
+        // original. Longer text ensures the pre-analysis viewport can scroll.
+        let pendingEnglish = Array(repeating: english, count: 4).joined(separator: "\n\n")
+        surface.setHint(text: pendingEnglish, loading: false, isTranslation: true, canRetry: false)
+        surface.setAnalysis(available: true, expanded: true, english: pendingEnglish, state: .loading)
+        surface.setSpeech(available: true, state: .idle, text: nil, english: pendingEnglish)
+        layout(root, surface)
+        let staleCount = snippets.count
+        original.readWord(at: firstWordPoint)
+        original.selectedRange = originalText.range(of: "an agent platform")
+        original.readSelectedText()
+        expressionSpeaker.sendActions(for: .touchUpInside)
+        selectionButton.sendActions(for: .touchUpInside)
+        if let readSelection {
+            let staleMenuInvoker = UIButton(type: .system)
+            staleMenuInvoker.addAction(readSelection, for: .touchUpInside)
+            staleMenuInvoker.sendActions(for: .touchUpInside)
+        }
+        try expect(snippets.count == staleCount, "\(prefix): discarded word view, phrase speaker and selection menu cannot read into a newer sentence")
+        let pendingOriginal: StudyReadingTextView = try descendant(surface, "keyboard.analysisOriginal")
+        let pendingRange = (pendingEnglish as NSString).range(of: "an agent platform")
+        pendingOriginal.selectedRange = pendingRange
+        studyScroll.setContentOffset(CGPoint(x: 0, y: 25), animated: false)
+        surface.setAnalysis(available: true, expanded: true, english: pendingEnglish, state: .ready(analysis))
+        layout(root, surface)
+        let readyOriginal: StudyReadingTextView = try descendant(surface, "keyboard.analysisOriginal")
+        try expect(pendingOriginal === readyOriginal && readyOriginal.selectedRange == pendingRange,
+                   "\(prefix): background analysis completion preserves the original view and current selection")
+        try expect(studyScroll.contentOffset.y == 25, "\(prefix): background analysis completion preserves reading position")
+        surface.setHint(text: english, loading: false, isTranslation: true, canRetry: false)
+        surface.setAnalysis(available: true, expanded: true, english: english, state: .ready(analysis))
+        surface.setSpeech(available: true, state: .idle, text: nil, english: english)
+        layout(root, surface)
+        surface.onReadAnalysisText = nil
+        surface.onAction = nil
+        surface.onUseEnglish = nil
+        surface.onUndoEnglish = nil
     }
 
     static func run() async throws {
@@ -147,6 +367,7 @@ private enum SpeechSurfaceChecks {
                 surface.setSpeech(available: true, state: .playing)
                 studyScroll.setContentOffset(.zero, animated: false)
                 try render(surface, name: prefix + "-learning")
+                try checkStudyReading(root: root, surface: surface, prefix: prefix)
 
                 let message = "暂时无法使用千问语音，请检查模型权限与账户余额。"
                 surface.setSpeech(available: true, state: .failed(message))
@@ -216,6 +437,7 @@ private enum SpeechSurfaceChecks {
             "viewports": [320, 393, 430],
             "styles": ["light", "dark"],
             "renderer": "Native Mac Catalyst UIKit. Not an iPhone playback test.",
+            "wordHitTesting": "Laid-out UIKit character coordinates through the production point-reading method; no synthesized touch events.",
             "networkRequests": 0,
             "audioPlayback": false
         ]

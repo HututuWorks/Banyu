@@ -38,6 +38,10 @@ Objective-C++ `PinyinDecoder` 串行使用AOSP引擎，并隔离各控制器的�
 
 控制器只在当前服务为千问、完全访问可用、英文与宿主快照一致时暴露朗读入口。点击时重新校验设置；英文生成和分析预取不会自动产生语音调用。苹果和自定义模式不使用留存的千问密钥。
 
-`QwenSpeechSynthesizer` 使用北京地域的 `qwen3-tts-flash`、Cherry音色、English语言。先请求合成，再下载同次生成的WAV；API Key仅发往固定千问端点，下载使用不带Key的新请求。参考[千问听读示例](https://platform.qianwenai.com/docs/developer-guides/speech/tts)与[官方接口](https://help.aliyun.com/zh/model-studio/qwen-tts-api)。仅允许文档列出的OSS域名，HTTP示例地址在发请求前升级HTTPS，所有重定向均拒绝。生成20秒、下载15秒上限，JSON32 KB、音频4 MB上限，下载字节处理不占主actor。
+`QwenSpeechSynthesizer` 使用北京地域的 `qwen3-tts-flash`、Cherry音色、English语言。键盘通过同一个POST的SSE逐段接收24 kHz/16 bit/单声道PCM，收到片段就交给播放器，不等待完整WAV或再下载OSS文件。API Key仅发往固定千问端点，所有重定向均拒绝；解析和Base64解码在独立actor，有8 MiB网络体积、1 MiB事件和最终4 MiB音频上限，单次PCM交付不超过8192字节；20秒网络空闲与120秒资源总时限为播放背压保留长句时间。流式完成必须收到stop且PCM完整，才包装WAV供重听；部分失败不缓存或自动重试。参考[官方接口](https://help.aliyun.com/zh/model-studio/qwen-tts-api)与[流式PCM播放说明](https://help.aliyun.com/zh/model-studio/non-realtime-tts-user-guide)。原有完整生成方法保留给不支持流播放的消费者，不作为失败后的自动付费回退。
 
-`SpeechPlaybackSession` 管理点击、取消、错误、单句内存缓存与旧结果隔离；`KeyboardAudioPlayer` 使用系统AVAudioPlayer以正常速率播放一遍，自然结束或主动停止时释放播放实例并恢复idle。自然结束保留当前句音频，再次点读无需重新生成。界面只接收状态并转发动作，音频不写磁盘。编辑、替换、设置切换、宿主失活或内存告警会清理缓存；展开/收起学习与纯键面切换不打断同一句。音频中断、耳机断开和媒体服务重置停止且不自动恢复，无录音与后台音频模式。
+`SpeechPlaybackSession` 管理点击、取消、错误、当前句内存缓存与旧结果隔离；`KeyboardAudioPlayer` 首播使用AVAudioEngine/AVAudioPlayerNode顺序播放PCM，播放队列有界，队列满时暂停读取后续片段。接收完成与播放完成分开，最后一段实际播放完才恢复idle。缓存重听继续使用AVAudioPlayer，所有路径均为正常速率播放一遍。界面只接收状态并转发动作，音频不写磁盘。编辑、替换、设置切换、宿主失活或内存告警会清理缓存；展开/收起学习与纯键面切换不打断同一句。音频中断、耳机断开和媒体服务重置停止且不自动恢复，无录音与后台音频模式。
+
+学习原文通过只读UITextView提供字词命中和原生选区；正文仍为18 pt/28 pt行高，仅外层学习区滚动。表达按钮读经过验证的source。Controller在每次点击时重新校验服务、完整译文、宿主快照和片段来源，收起后的过期回调不触发请求。状态经Surface传回Panel，轻高亮与按钮更新不重建内容。
+
+整句与片段共用单个播放会话；scopeID为当前完整译文，配置或宿主上下文变化时清理。LRU缓存最多12条且合计不超过4 MiB；切片段取消旧请求、停止旧声音，有缓存即复用。无语音预取或整句音频裁切，每个未缓存片段只在明确点读时独立生成。

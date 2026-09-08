@@ -40,6 +40,7 @@ final class KeyboardSurface: UIView {
     var onToggleAnalysis: (() -> Void)?
     var onRetryAnalysis: (() -> Void)?
     var onToggleSpeech: (() -> Void)?
+    var onReadAnalysisText: ((String) -> Void)?
     var configureGlobe: ((UIButton) -> Void)? {
         didSet { if let globeKey { configureGlobe?(globeKey) } }
     }
@@ -64,6 +65,7 @@ final class KeyboardSurface: UIView {
     private let speechErrorLabel = UILabel()
     private var speechErrorDismissal: Task<Void, Never>?
     private var lastSpeechFailure: String?
+    private var lastSpeechFailureText: String?
     private let analysisTitleLabel = UILabel()
     private let analysisPanel = SentenceAnalysisPanel()
     private let headerDivider = UIView()
@@ -143,6 +145,10 @@ final class KeyboardSurface: UIView {
             analysisPanel.bottomAnchor.constraint(equalTo: canvas.bottomAnchor)
         ])
         analysisPanel.onRetry = { [weak self] in self?.onRetryAnalysis?() }
+        analysisPanel.onRead = { [weak self] text in
+            guard let self, self.analysisExpanded, self.speechAvailable else { return }
+            self.onReadAnalysisText?(text)
+        }
         analysisPanel.onScrollChanged = { [weak self] scrolled in
             guard let self else { return }
             self.headerDivider.isHidden = self.analysisPanel.isHidden || !scrolled
@@ -348,14 +354,26 @@ final class KeyboardSurface: UIView {
 
     /// Playback and credentials remain owned by the controller. Every visible
     /// state keeps the same 44 pt target, including cancel during loading.
-    func setSpeech(available: Bool, state: SpeechPlaybackSession.State) {
+    func setSpeech(available: Bool, state: SpeechPlaybackSession.State,
+                   text: String? = nil, english: String? = nil) {
         speechAvailable = available
+        analysisPanel.setSpeech(available: available, state: state, text: text)
+        // The header always controls the whole sentence. A playing snippet has
+        // its own highlight and speaker; tapping the header switches to the whole.
+        let isSnippet = text != nil && english != nil && text != english
+        let headerState: SpeechPlaybackSession.State = isSnippet ? .idle : state
         speechIsLoading = false
         let symbol: String
         speechButton.tintColor = hintActionColor
         speechButton.accessibilityValue = nil
-        if case .failed = state {} else { lastSpeechFailure = nil; dismissSpeechError() }
-        switch state {
+        if case let .failed(message) = state {
+            if available, lastSpeechFailure != message || lastSpeechFailureText != text {
+                lastSpeechFailure = message
+                lastSpeechFailureText = text
+                showSpeechError(message)
+            }
+        } else { lastSpeechFailure = nil; lastSpeechFailureText = nil; dismissSpeechError() }
+        switch headerState {
         case .idle:
             symbol = "speaker.wave.2"
             speechButton.accessibilityLabel = "朗读英文"
@@ -377,14 +395,10 @@ final class KeyboardSurface: UIView {
             speechButton.accessibilityLabel = "重试朗读"
             speechButton.accessibilityValue = message
             speechButton.accessibilityHint = "点按重试朗读"
-            if available, lastSpeechFailure != message {
-                lastSpeechFailure = message
-                showSpeechError(message)
-            }
         }
         speechButton.setImage(symbol.isEmpty ? nil : UIImage(systemName: symbol,
             withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .regular)), for: .normal)
-        if !available { lastSpeechFailure = nil; dismissSpeechError() }
+        if !available { lastSpeechFailure = nil; lastSpeechFailureText = nil; dismissSpeechError() }
         updateCompositionPresentation()
     }
 
@@ -513,6 +527,9 @@ final class KeyboardSurface: UIView {
         hintLabel.lineBreakMode = .byWordWrapping
         if showsAnalysis && analysisPanel.isHidden {
             analysisPanel.beginPresentation()
+        }
+        if !showsAnalysis && !analysisPanel.isHidden {
+            analysisPanel.endPresentation()
         }
         analysisPanel.isHidden = !showsAnalysis
         backgroundColor = showsAnalysis ? SentenceAnalysisPanel.learningBackground : surfaceColor

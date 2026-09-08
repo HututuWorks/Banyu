@@ -9,7 +9,7 @@ import subprocess
 import xml.etree.ElementTree as ET
 
 APP_DISPLAY_NAME = '伴语'
-BUILD_VERSION = '30'
+BUILD_VERSION = '31'
 MARKETING_VERSION = '0.1.0'
 APP_TARGET_NAME = 'EnglishHintKeyboard'
 APP_BUNDLE_IDENTIFIER = 'com.tutuhu.EnglishHintKeyboard'

@@ -83,7 +83,7 @@ struct QwenTranslationSettingsView: View {
                 Label("点小喇叭听英文，再点停止", systemImage: "speaker.wave.2")
                     .font(.subheadline)
             } header: { Text("英文听读") } footer: {
-                Text("复用这枚密钥，使用千问 AI 语音，以正常语速朗读一遍，结束后自动停止。点击后才生成音频并单独计费，同一句再次点读会复用本地音频。首次播放需要联网；密钥需有语音模型权限。")
+                Text("复用这枚密钥，使用千问 AI 语音。整句、单词与短语都以正常语速读一遍；展开学习可点单词或选中短语。点击后才生成并单独计费，最近听过的片段可复用本地音频。首次播放需要联网；密钥需有语音模型权限。")
             }
 
             if hasSavedKey {

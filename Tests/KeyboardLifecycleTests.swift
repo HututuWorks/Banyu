@@ -37,6 +37,15 @@ private final class LifecyclePendingSpeech: SpeechSynthesizing {
 }
 
 @MainActor
+private final class LifecycleImmediateSpeech: SpeechSynthesizing {
+    var requests: [String] = []
+    func synthesize(_ text: String) async throws -> Data {
+        requests.append(text)
+        return Data([1, 2, 3])
+    }
+}
+
+@MainActor
 private final class LifecycleDocumentProxy: NSObject, UITextDocumentProxy {
     var text = ""
     let documentIdentifier = UUID()
@@ -164,13 +173,15 @@ extension KeyboardViewController {
         let controller = LifecycleTestController()
         let player = LifecycleSpeechPlayer()
         controller.speechSession = SpeechPlaybackSession(player: player)
+        // Even a failed regression must never reach the real speech transport.
+        controller.makeSpeechSynthesizer = { _ in LifecyclePendingSpeech() }
         controller.loadViewIfNeeded()
         controller.viewWillAppear(false)
-        func prepare(_ provider: TranslationProvider, revision: String = "qwen-1") {
+        func prepare(_ provider: TranslationProvider, revision: String = "qwen-1", english: String = "Hello") {
             TranslationSettingsStore.shared.snapshot = .init(provider: provider, apiKey: "fixture-key", revision: revision)
             controller.reloadSpeechSettings()
             controller.proxy.text = "你好"
-            controller.displayedHint = .init(status: .ready, source: "你好", displayText: "Hello")
+            controller.displayedHint = .init(status: .ready, source: "你好", displayText: english)
             controller.hintSnapshot = controller.documentSnapshot()
             controller.observedSnapshot = controller.documentSnapshot()
             controller.renderHint()
@@ -188,7 +199,8 @@ extension KeyboardViewController {
 
         func startPending() async -> LifecyclePendingSpeech {
             let synthesizer = LifecyclePendingSpeech()
-            controller.speechSession.toggle(text: "Hello", configurationID: "qwen-1", synthesizer: synthesizer)
+            controller.speechSession.toggle(text: "Hello", configurationID: "qwen-1",
+                                            scopeID: "Hello", synthesizer: synthesizer)
             for _ in 0..<20 where !synthesizer.started { await Task.yield() }
             return synthesizer
         }
@@ -239,6 +251,65 @@ extension KeyboardViewController {
         controller.viewWillDisappear(false)
         try expect(controller.speechSession.state == .idle && controller.speechContext == nil && player.plays == 0,
                    "dismissal clears speech; no fixture audio or stale result reaches playback")
+
+        controller.visible = true
+        controller.hostActive = true
+        let english = "I'd like to set up a resource-intensive research platform."
+        prepare(.qwen, english: english)
+        controller.analysisEnglish = english
+        controller.analysisSnapshot = controller.documentSnapshot()
+        controller.analysisExpanded = true
+        let immediate = LifecycleImmediateSpeech()
+        controller.makeSpeechSynthesizer = { _ in immediate }
+        let untouchedHost = controller.documentSnapshot()
+        func settleSpeech() async {
+            for _ in 0..<30 { await Task.yield() }
+        }
+        controller.toggleSpeech("set up")
+        await settleSpeech()
+        try expect(immediate.requests == ["set up"] && controller.speechSession.currentText == "set up",
+                   "real controller reads the chosen original phrase, not the whole sentence")
+        controller.toggleSpeech("resource-intensive")
+        await settleSpeech()
+        try expect(immediate.requests == ["set up", "resource-intensive"]
+                   && controller.speechSession.currentText == "resource-intensive",
+                   "selecting another word switches the playing target")
+        controller.toggleSpeech("set up")
+        await settleSpeech()
+        try expect(immediate.requests.count == 2 && player.plays == 3,
+                   "returning to an earlier phrase reuses this sentence's cached audio")
+        controller.toggleSpeech()
+        await settleSpeech()
+        try expect(immediate.requests.last == english && controller.speechSession.currentText == english,
+                   "whole-sentence button switches from a snippet to the complete translation")
+        try expect(controller.documentSnapshot() == untouchedHost,
+                   "word, phrase and whole-sentence playback do not edit or move host input")
+        let requests = immediate.requests.count
+        for snippet in ["an invented phrase", "", " ", "."] {
+            controller.toggleSpeech(snippet)
+        }
+        await settleSpeech()
+        try expect(immediate.requests.count == requests,
+                   "invalid or punctuation-only snippets cannot start generation")
+        controller.analysisExpanded = false
+        controller.toggleSpeech("research")
+        await settleSpeech()
+        try expect(immediate.requests.count == requests,
+                   "a callback after collapse cannot synthesize another word")
+        controller.analysisExpanded = true
+        controller.proxy.text += "!"
+        controller.toggleSpeech("research")
+        await settleSpeech()
+        try expect(immediate.requests.count == requests && controller.speechSession.state == .idle,
+                   "an outdated host snapshot cancels old playback and rejects the selection")
+        for provider in [TranslationProvider.apple, .custom] {
+            prepare(provider, english: english)
+            controller.toggleSpeech("research")
+        }
+        await settleSpeech()
+        try expect(immediate.requests.count == requests,
+                   "snippet callbacks cannot use retained Qwen keys in another provider")
+        controller.viewWillDisappear(false)
         TranslationSettingsStore.shared.snapshot = .init(provider: .apple)
     }
 }

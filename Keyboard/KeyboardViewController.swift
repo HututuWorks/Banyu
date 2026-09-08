@@ -11,6 +11,7 @@ final class KeyboardViewController: UIInputViewController {
     private let surface = KeyboardSurface()
     private let analysisSession = SentenceAnalysisSession()
     private var speechSession = SpeechPlaybackSession(player: KeyboardAudioPlayer())
+    private var makeSpeechSynthesizer: (String) -> any SpeechSynthesizing = { QwenSpeechSynthesizer(apiKey: $0) }
     private var speechSettings: TranslationSettingsSnapshot?
     private struct SpeechContext: Equatable {
         let english: String
@@ -155,6 +156,7 @@ final class KeyboardViewController: UIInputViewController {
         surface.onToggleAnalysis = { [weak self] in self?.toggleAnalysis() }
         surface.onRetryAnalysis = { [weak self] in self?.requestAnalysis(retry: true) }
         surface.onToggleSpeech = { [weak self] in self?.toggleSpeech() }
+        surface.onReadAnalysisText = { [weak self] text in self?.toggleSpeech(text) }
         speechSession.onChange = { [weak self] in self?.renderSpeech() }
         analysisSession.onChange = { [weak self] in self?.analysisDidChange() }
         for notification in [NSNotification.Name.NSExtensionHostWillResignActive,
@@ -626,7 +628,8 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func renderSpeech() {
-        surface.setSpeech(available: speechContext != nil, state: speechSession.state)
+        surface.setSpeech(available: speechContext != nil, state: speechSession.state,
+                          text: speechSession.currentText, english: speechContext?.english)
     }
 
     private func invalidateSpeech() {
@@ -635,14 +638,22 @@ final class KeyboardViewController: UIInputViewController {
         renderSpeech()
     }
 
-    private func toggleSpeech() {
+    private func toggleSpeech(_ snippet: String? = nil) {
         // Revalidate current settings and host snapshot at the actual tap. The
         // service is created only here, never by translation/analysis prefetch.
         reloadSpeechSettings()
         refreshSpeech()
         guard let context = speechContext, let key = speechSettings?.apiKey else { return }
-        speechSession.toggle(text: context.english, configurationID: context.configurationID,
-                             synthesizer: QwenSpeechSynthesizer(apiKey: key))
+        if let snippet {
+            // A stale selection or a callback from a collapsed lesson may not
+            // synthesize anything outside the currently verified translation.
+            guard analysisExpanded, analysisEnglish == context.english,
+                  analysisSnapshot == context.snapshot, !snippet.isEmpty,
+                  snippet.unicodeScalars.contains(where: CharacterSet.alphanumerics.contains),
+                  context.english.range(of: snippet, options: .literal) != nil else { return }
+        }
+        speechSession.toggle(text: snippet ?? context.english, configurationID: context.configurationID,
+                             scopeID: context.english, synthesizer: makeSpeechSynthesizer(key))
     }
 
     override func didReceiveMemoryWarning() {
