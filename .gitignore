@@ -1,0 +1,25 @@
+# Reproducible build products and local review evidence
+/build/
+/outputs/
+/.local/
+.DS_Store
+__pycache__/
+*.pyc
+*.dSYM/
+*.ipa
+*.app/
+*.appex/
+
+# Xcode machine state and signing
+xcuserdata/
+*.xcuserstate
+Config/Local.xcconfig
+*.mobileprovision
+*.p12
+*.cer
+*.key
+
+# Credentials and local environment
+.env
+.env.*
+!.env.example

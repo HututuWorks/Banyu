@@ -1,0 +1,199 @@
+{
+  "repository": "https://android.googlesource.com/platform/packages/inputmethods/PinyinIME",
+  "commit": "49aebad1c1cfbbcaa9288ffed5161e79e57c3679",
+  "downloaded": "2026-09-08",
+  "files": [
+    {
+      "path": "NOTICE",
+      "sha256": "b5830d96fb5a7e7e7ebcc295f352846b4b998e78fdc8f9aa68e134d2e4b39986",
+      "bytes": 10690
+    },
+    {
+      "path": "MODULE_LICENSE_APACHE2",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "jni/Android.mk",
+      "sha256": "862707896a95a1c4b90b00889acd815ed81d6b15a80cde3983989a3b25bbeee1",
+      "bytes": 710
+    },
+    {
+      "path": "jni/include/atomdictbase.h",
+      "sha256": "04ec8f2d51b07f5d309bab4d5eed3dcd4f8ce458d3defe4162614e10ff424f0a",
+      "bytes": 10629
+    },
+    {
+      "path": "jni/include/dictbuilder.h",
+      "sha256": "35941652c4419458805e30bb9d89a0b69cdd7a00b4a4b895c1e47acdd347dcba",
+      "bytes": 5596
+    },
+    {
+      "path": "jni/include/dictdef.h",
+      "sha256": "5321129227c9c12dc28dd4a10f243a264358d67a4ec71a47499a18fca0be5d33",
+      "bytes": 4951
+    },
+    {
+      "path": "jni/include/dictlist.h",
+      "sha256": "501196c8e3793571e903a31d6d21c6ac5d8b6b8e1a95db6a0fa94159f09e950d",
+      "bytes": 3978
+    },
+    {
+      "path": "jni/include/dicttrie.h",
+      "sha256": "5661f147968b8ecea1843f786bc76dee4d116db9b82b5b5bd6b1491a7ef67669",
+      "bytes": 8966
+    },
+    {
+      "path": "jni/include/lpicache.h",
+      "sha256": "be5cbf7a69c7ab12b6912b226a3dcbde9f52e288c6639b14b4abe2df0a35756d",
+      "bytes": 2051
+    },
+    {
+      "path": "jni/include/matrixsearch.h",
+      "sha256": "ff8719a86e33c9f20c98ff407b2f80ada5f6363cf7baf24827a1f2549a7834b8",
+      "bytes": 18438
+    },
+    {
+      "path": "jni/include/mystdlib.h",
+      "sha256": "c5b8f130dd1eb8d49264c97b46f65bb9643bdbbce76faf27dfd4ccb3a8a327de",
+      "bytes": 1042
+    },
+    {
+      "path": "jni/include/ngram.h",
+      "sha256": "5901a426b3f5b2ca93b603fa80733801f582057444f3aaa45267b0b12bb27188",
+      "bytes": 2884
+    },
+    {
+      "path": "jni/include/pinyinime.h",
+      "sha256": "44b4693855433f41662d8af0e516dc7c9ce6b06d72c6610e370bb2c4c25b7015",
+      "bytes": 7268
+    },
+    {
+      "path": "jni/include/searchutility.h",
+      "sha256": "4ddbdf54bdf70220504d8d4a783f6e19c4bef8e5e0fc9a8ee1307b7811e9dfa4",
+      "bytes": 5390
+    },
+    {
+      "path": "jni/include/spellingtable.h",
+      "sha256": "69c1b45651156a68177372098661b658d630a398395dc614fb2162ca8883d3a1",
+      "bytes": 3845
+    },
+    {
+      "path": "jni/include/spellingtrie.h",
+      "sha256": "0912d88ed87118b8b2c263851800c9f5dd04aa81f903bd00eb2a081c884dbcc7",
+      "bytes": 8839
+    },
+    {
+      "path": "jni/include/splparser.h",
+      "sha256": "09a1daaec9366ebe4202d69c54a9b93534791fc976eaba5f313c209c82193f0b",
+      "bytes": 4320
+    },
+    {
+      "path": "jni/include/sync.h",
+      "sha256": "f21bb5b30258febb0ef34146e55a47ffa748ebe570953704d139f0e45c9de153",
+      "bytes": 2144
+    },
+    {
+      "path": "jni/include/userdict.h",
+      "sha256": "3710026e255998961a5eece771635b682401b8fbb0f860cc8c1f0b77295537d5",
+      "bytes": 12815
+    },
+    {
+      "path": "jni/include/utf16char.h",
+      "sha256": "90bf7e256ad0c050f59a22acdd79a9eaebe0de32aae9684ed7b68e44cdbd6126",
+      "bytes": 1647
+    },
+    {
+      "path": "jni/include/utf16reader.h",
+      "sha256": "4e81908a8ddfbcd79500b1e51b444c35c44cf2567a3fd69b658f147bb8c33d97",
+      "bytes": 1346
+    },
+    {
+      "path": "jni/share/dictbuilder.cpp",
+      "sha256": "e1b0cb286b7ab4bb69c78ba17c25e4db8babb7028483e3c0bf991082a89761cf",
+      "bytes": 31377
+    },
+    {
+      "path": "jni/share/dictlist.cpp",
+      "sha256": "edf1db7b01b1c440235423723505b2a1ab5e212bbb4d5bdd055dd6f018b4cb46",
+      "bytes": 12157
+    },
+    {
+      "path": "jni/share/dicttrie.cpp",
+      "sha256": "9578841203c491d540a7d86d39124d238c74614a03ff469e1fcde7e8220855c7",
+      "bytes": 30561
+    },
+    {
+      "path": "jni/share/lpicache.cpp",
+      "sha256": "b61f8175d834a976bde9e8faac8d074784b12011429ce4ad48bdb24fd9efbd47",
+      "bytes": 2256
+    },
+    {
+      "path": "jni/share/matrixsearch.cpp",
+      "sha256": "1cb744bd5d4ea9851586e3fd08940cf443786c0c259380043fb73b104b70524d",
+      "bytes": 61038
+    },
+    {
+      "path": "jni/share/mystdlib.cpp",
+      "sha256": "753725a943da62462feeaa33d9f7c0c2aa1083bfc7b256299663b63567760c37",
+      "bytes": 1157
+    },
+    {
+      "path": "jni/share/ngram.cpp",
+      "sha256": "12cee247ea8077da7233cacbd61affbb939c6a208be00ae82687cd4716e31042",
+      "bytes": 8882
+    },
+    {
+      "path": "jni/share/pinyinime.cpp",
+      "sha256": "512e6716d77d63ab8ad5e4cd2372430b00a4f0c6e34b9ff0a797a96e578f4cf9",
+      "bytes": 4680
+    },
+    {
+      "path": "jni/share/searchutility.cpp",
+      "sha256": "72b5b4de7065b675cd7d2dd50e2ece9a25cded2d4359865e943ae832994f7d73",
+      "bytes": 6212
+    },
+    {
+      "path": "jni/share/spellingtable.cpp",
+      "sha256": "c9dc7ea1f72b44047a0c75703b23ec02041bdc7820338c224d1051e41d9d600e",
+      "bytes": 8404
+    },
+    {
+      "path": "jni/share/spellingtrie.cpp",
+      "sha256": "c3419b3219ca76816fba674c5e11b84d83e3ebfe9991638b9ba833c1dc37aa59",
+      "bytes": 22984
+    },
+    {
+      "path": "jni/share/splparser.cpp",
+      "sha256": "33c150844d15e36474e3da12eb2d36efd23645a658d49f8ebaf529bf1223b03d",
+      "bytes": 9635
+    },
+    {
+      "path": "jni/share/sync.cpp",
+      "sha256": "62ec48ce9592a2a010494aed125f122019f0b801d23e44b6a54e27db14aab09b",
+      "bytes": 2369
+    },
+    {
+      "path": "jni/share/userdict.cpp",
+      "sha256": "dab022028d2f299a03f697a1015a4e391f1371877ab4dcfd7b7962b9624ecda6",
+      "bytes": 58988
+    },
+    {
+      "path": "jni/share/utf16char.cpp",
+      "sha256": "bd3da194b3b694c2dd4c44553d4602253014948746dd50810759b8a5557de9dc",
+      "bytes": 4228
+    },
+    {
+      "path": "jni/share/utf16reader.cpp",
+      "sha256": "abca33d43a79f551597becb1a5ad17d1834c622345eff331831321fd7b6ba1d2",
+      "bytes": 3141
+    },
+    {
+      "path": "res/raw/dict_pinyin.dat",
+      "sha256": "6bf0bbde4e3134cce38d08524a9f4dc1af40435243c8e36b38eb68d1e14462b2",
+      "bytes": 1068442
+    }
+  ],
+  "upstream_author_time": "Wed May 14 01:56:35 2014 +0000",
+  "upstream_committer_time": "Wed May 14 01:56:36 2014 +0000"
+}

@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.png binary
+*.dat binary
+# Preserve upstream text byte-for-byte, including original whitespace.
+Vendor/** -whitespace
+Licenses/** -whitespace

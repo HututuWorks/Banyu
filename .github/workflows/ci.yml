@@ -1,0 +1,40 @@
+name: Build and test
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check repository and generated project
+        run: |
+          python3 scripts/check-repository.py
+          python3 scripts/generate-project.py
+          git diff --exit-code -- EnglishHintKeyboard.xcodeproj Config
+      - name: Core, translation and native pinyin tests
+        run: scripts/test.sh
+      - name: Build iPhone app and both keyboard extensions
+        env:
+          EHK_CONFIGURATION: Release
+        run: scripts/xcode-project.sh build-device CODE_SIGNING_ALLOWED=NO build
+      - name: Package unsigned app for local signing
+        run: |
+          mkdir -p build/artifacts
+          ditto -c -k --keepParent build/Products/Release-iphoneos/EnglishHintKeyboard.app build/artifacts/Banyu-unsigned.zip
+          shasum -a 256 build/artifacts/Banyu-unsigned.zip > build/artifacts/SHA256SUMS
+      - name: Save unsigned app
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Banyu-unsigned-${{ github.sha }}
+          path: build/artifacts/
+          retention-days: 7
+          if-no-files-found: error
