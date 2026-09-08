@@ -5,6 +5,7 @@ import UIKit
 @MainActor
 final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate {
     static let learningBackground = AnalysisPalette.background
+    static let learningText = AnalysisPalette.text
     var onRetry: (() -> Void)?
     var onRead: ((String) -> Void)?
     var onScrollChanged: ((Bool) -> Void)?
@@ -95,6 +96,7 @@ final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate {
             readingText?.onRead = nil
             readingText?.clearSelection()
             readingHint?.onReadSelection = nil
+            readingHint?.onHeightChanged = nil
             readingText = nil
             readingHint = nil
         }
@@ -123,12 +125,14 @@ final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate {
                 guard let self, self.speechAvailable, !self.isHidden else { return }
                 self.readingText?.readSelectedText()
             }
-            append(hint)
+            hint.onHeightChanged = { [weak self] in self?.setNeedsLayout() }
         }
         switch presentation {
         case .idle, .loading:
+            appendReadingHint()
             append(AnalysisLoadingView(), top: english.isEmpty ? 0 : 18)
         case let .failure(message):
+            appendReadingHint()
             append(AnalysisLabel(message, size: 14, lineHeight: 23, color: AnalysisPalette.secondary),
                    top: english.isEmpty ? 0 : 18)
             let retry = UIButton(type: .system)
@@ -151,34 +155,32 @@ final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate {
     private func buildAnalysis(_ analysis: SentenceAnalysis) {
         if let overview = analysis.overview, !overview.isEmpty {
             let sentence = analysis.kind == "sentence"
-            let label = AnalysisLabel(overview, size: sentence ? 13 : 15,
-                                      lineHeight: sentence ? 21 : 24,
+            let label = AnalysisLabel(overview, size: 15,
+                                      lineHeight: 23,
                                       color: sentence ? AnalysisPalette.secondary : AnalysisPalette.text)
             label.accessibilityIdentifier = "keyboard.analysisOverview"
-            append(label, top: 8)
+            append(label, top: 10)
         }
+        appendReadingHint()
         if !analysis.insights.isEmpty {
-            let section = AnalysisReadingSection(title: analysis.kind == "word" ? "用法" : "关键用法",
+            let section = AnalysisReadingSection(title: analysis.kind == "word" ? "用法" : "理解这句",
                                                   identifier: "keyboard.analysisInsightHeading")
             for (index, insight) in analysis.insights.enumerated() {
                 let group = AnalysisVerticalGroup()
                 group.accessibilityIdentifier = "keyboard.analysisInsight.\(index)"
-                let title = AnalysisInsightButton(insight.title)
+                let title = AnalysisInsightButton(insight.title, explanation: insight.explanation, index: index)
                 title.accessibilityIdentifier = "keyboard.analysisInsightTitle.\(index)"
                 title.addAction(UIAction { [weak self] _ in
                     guard let self, !self.isHidden else { return }
                     self.readingText?.highlight(source: insight.source)
                 }, for: .touchUpInside)
                 group.append(title)
-                let explanation = AnalysisLabel(insight.explanation, size: 14, lineHeight: 23)
-                explanation.accessibilityIdentifier = "keyboard.analysisInsightExplanation.\(index)"
-                group.append(explanation, top: 5)
-                section.append(group, top: index == 0 ? 9 : 16)
+                section.append(group, top: index == 0 ? 10 : 14)
             }
-            append(section, top: 20)
+            append(section, top: 22)
         }
         if !analysis.expressions.isEmpty {
-            let section = AnalysisReadingSection(title: "实用表达", identifier: "keyboard.analysisExpressionHeading")
+            let section = AnalysisReadingSection(title: "可以这样说", identifier: "keyboard.analysisExpressionHeading")
             section.accessibilityIdentifier = "keyboard.analysisExpressions"
             var visibleCount = 0
             for (index, expression) in analysis.expressions.enumerated() {
@@ -198,23 +200,28 @@ final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate {
                     group.append(header)
                 }
                 if !repeatsMeaning {
-                    let meaning = AnalysisLabel(expression.meaning, size: 14, lineHeight: 23)
+                    let meaning = AnalysisLabel(expression.meaning, size: 14, lineHeight: 22,
+                                                color: AnalysisPalette.secondary)
                     meaning.accessibilityIdentifier = "keyboard.analysisExpressionMeaning.\(index)"
-                    group.append(meaning, top: repeatsOriginal ? 0 : 3)
+                    group.append(meaning)
                 }
                 if let usage = expression.usage, !usage.isEmpty,
                    usage != analysis.overview, usage != expression.meaning {
-                    let note = AnalysisLabel(usage, size: 13, lineHeight: 21, color: AnalysisPalette.secondary)
+                    let note = AnalysisLabel(usage, size: 14, lineHeight: 22, color: AnalysisPalette.secondary)
                     note.accessibilityIdentifier = "keyboard.analysisExpressionUsage.\(index)"
                     group.append(note, top: repeatsOriginal && repeatsMeaning ? 0 : 3)
                 }
                 if !group.subviews.isEmpty {
-                    section.append(group, top: visibleCount == 0 ? 9 : 15)
+                    section.append(AnalysisRule(), top: visibleCount == 0 ? 10 : 12)
+                    section.append(group, top: 4)
                     visibleCount += 1
                 }
             }
-            if visibleCount > 0 { append(section, top: 20) }
+            if visibleCount > 0 { append(section, top: 22) }
         }
+    }
+    private func appendReadingHint() {
+        if let readingHint { append(readingHint, top: 12) }
     }
     private func append(_ view: UIView, top: CGFloat = 0) {
         blocks.append((view, top))
@@ -226,11 +233,11 @@ final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate {
         // Canvas is already inset 4 pt, making 18 pt page margins.
         let inset: CGFloat = bounds.width < 347 ? 10 : 14
         let width = max(1, bounds.width - inset * 2)
-        var y: CGFloat = 8
+        var y: CGFloat = 18
         for block in blocks {
-            y += block.top
             var height = ceil(block.view.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
             if block.view is UIButton { height = max(44, height) }
+            if height > 0 { y += block.top }
             block.view.frame = CGRect(x: inset, y: y, width: width, height: height)
             y += height
         }
@@ -419,7 +426,9 @@ private final class AnalysisReadingHint: UIView {
     var available = false { didSet { updateVisibility() } }
     var hasSelection = false { didSet { updateVisibility() } }
     var onReadSelection: (() -> Void)?
-    private let label = AnalysisLabel("轻点单词 · 长按选择短语", size: 11, lineHeight: 18, color: AnalysisPalette.secondary)
+    var onHeightChanged: (() -> Void)?
+    private var measuredHeight: CGFloat = 0
+    private let label = AnalysisLabel("轻点听单词 · 长按选择短语", size: 11, lineHeight: 18, color: AnalysisPalette.secondary)
     private let readSelection = UIButton(type: .system)
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -451,11 +460,17 @@ private final class AnalysisReadingHint: UIView {
         label.isHidden = !available || hasSelection
         readSelection.isHidden = !available || !hasSelection
         readSelection.isEnabled = available && hasSelection
+        let height: CGFloat = available ? (hasSelection ? 44 : 18) : 0
+        if height != measuredHeight {
+            measuredHeight = height
+            setNeedsLayout()
+            onHeightChanged?()
+        }
     }
-    override func sizeThatFits(_ size: CGSize) -> CGSize { CGSize(width: size.width, height: available ? 44 : 0) }
+    override func sizeThatFits(_ size: CGSize) -> CGSize { CGSize(width: size.width, height: measuredHeight) }
     override func layoutSubviews() {
         super.layoutSubviews()
-        label.frame = CGRect(x: 0, y: 13, width: bounds.width, height: 18)
+        label.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 18)
         readSelection.frame = CGRect(x: 0, y: 0, width: min(120, bounds.width), height: 44)
     }
 }
@@ -463,24 +478,36 @@ private final class AnalysisReadingHint: UIView {
 @MainActor
 private final class AnalysisInsightButton: UIControl {
     private let label: AnalysisLabel
-    init(_ title: String) {
-        label = AnalysisLabel(title, size: 17, lineHeight: 25, color: AnalysisPalette.blue, weight: .medium)
+    private let explanation: AnalysisLabel
+    private let accent = UIView()
+    init(_ title: String, explanation: String, index: Int) {
+        label = AnalysisLabel(title, size: 15, lineHeight: 23, color: AnalysisPalette.text, weight: .medium)
+        self.explanation = AnalysisLabel(explanation, size: 14, lineHeight: 22, color: AnalysisPalette.secondary)
         super.init(frame: .zero)
+        accent.backgroundColor = AnalysisPalette.blue
+        accent.layer.cornerRadius = 1
+        addSubview(accent)
         addSubview(label)
+        self.explanation.accessibilityIdentifier = "keyboard.analysisInsightExplanation.\(index)"
+        addSubview(self.explanation)
         isAccessibilityElement = true
-        accessibilityLabel = title
+        accessibilityLabel = "\(title)。\(explanation)"
         accessibilityHint = "在原句中突出对应片段"
         accessibilityTraits = .button
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func sizeThatFits(_ size: CGSize) -> CGSize {
-        let height = label.sizeThatFits(size).height
+        let available = CGSize(width: max(1, size.width - 14), height: .greatestFiniteMagnitude)
+        let height = ceil(label.sizeThatFits(available).height) + 5 + ceil(explanation.sizeThatFits(available).height)
         return CGSize(width: size.width, height: max(44, ceil(height)))
     }
     override func layoutSubviews() {
         super.layoutSubviews()
-        let height = min(bounds.height, ceil(label.sizeThatFits(bounds.size).height))
-        label.frame = CGRect(x: 0, y: (bounds.height - height) / 2, width: bounds.width, height: height)
+        let width = max(1, bounds.width - 14)
+        let height = ceil(label.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
+        accent.frame = CGRect(x: 0, y: 0, width: 2, height: bounds.height)
+        label.frame = CGRect(x: 14, y: 0, width: width, height: height)
+        explanation.frame = CGRect(x: 14, y: height + 5, width: width, height: max(0, bounds.height - height - 5))
     }
 }
 
@@ -541,12 +568,12 @@ private final class AnalysisExpressionHeader: UIView {
 
 @MainActor
 private enum AnalysisPalette {
-    static let background = color(light: 0xF4F5F8, dark: 0x181A1F)
-    static let text = color(light: 0x252C36, dark: 0xEBEFF6)
-    static let secondary = color(light: 0x667180, dark: 0xAAB4C4)
-    static let rule = color(light: 0xE5E8ED, dark: 0x383E48)
-    static let blue = color(light: 0x3969AD, dark: 0x9EBEF1)
-    static let teal = color(light: 0x277C6C, dark: 0x8BCBB8)
+    static let background = color(light: 0xF7F8FA, dark: 0x191C22)
+    static let text = color(light: 0x202631, dark: 0xEDF0F6)
+    static let secondary = color(light: 0x626D7C, dark: 0xABB5C4)
+    static let rule = color(light: 0xE2E6ED, dark: 0x3A414D)
+    static let blue = color(light: 0x3669AA, dark: 0x9EBEF0)
+    static let teal = color(light: 0x26766D, dark: 0x8DC8BC)
     private static func color(light: UInt32, dark: UInt32) -> UIColor {
         UIColor { traits in
             let value = traits.userInterfaceStyle == .dark ? dark : light
@@ -598,10 +625,9 @@ private class AnalysisVerticalGroup: UIView {
 private final class AnalysisReadingSection: AnalysisVerticalGroup {
     init(title: String, identifier: String) {
         super.init(frame: .zero)
-        append(AnalysisRule())
         let heading = AnalysisLabel(title, size: 12, lineHeight: 18, color: AnalysisPalette.secondary, weight: .medium)
         heading.accessibilityIdentifier = identifier
-        append(heading, top: 14)
+        append(heading)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }

@@ -9,7 +9,7 @@ private struct SpeechSurfaceFailure: Error { let message: String }
 private enum SpeechSurfaceChecks {
     static var assertions = 0
     static let english = "I’d like to set up an agent platform for research, though it might be quite resource-intensive. I'll make it up to you later and throw in some extra perks."
-    static let analysis = SentenceAnalysis(kind: "sentence", overview: "先表达计划，再说明顾虑与补偿。", insights: [
+    static let analysis = SentenceAnalysis(kind: "sentence", overview: "我想搭建一个科研智能体平台，可能比较耗费资源。之后会补偿你，再额外给些福利。", insights: [
         .init(source: "I’d like to", title: "委婉地表达想法", explanation: "would like to 后接动词原形，用来表达想做的事。")
     ], expressions: [
         .init(text: "set up", source: "set up", meaning: "建立、搭建"),
@@ -72,6 +72,10 @@ private enum SpeechSurfaceChecks {
         let expressionLabel: UILabel = try descendant(surface, "keyboard.analysisExpressionText.1")
         let selectionButton: UIButton = try descendant(surface, "keyboard.analysisReadSelectionButton")
         let readingHint: UIView = try descendant(surface, "keyboard.analysisReadingHint")
+        let overview: UILabel = try descendant(surface, "keyboard.analysisOverview")
+        let firstInsight: UIView = try descendant(surface, "keyboard.analysisInsight.0")
+        let insightAction: UIControl = try descendant(surface, "keyboard.analysisInsightTitle.0")
+        let insightExplanation: UILabel = try descendant(surface, "keyboard.analysisInsightExplanation.0")
         let originalText = english as NSString
         var snippets: [String] = []
         var hostActions = 0
@@ -100,6 +104,18 @@ private enum SpeechSurfaceChecks {
                    "\(prefix): phrase speaker has a44pt touch target")
         try expect(expressionLabel.frame.maxX <= expressionSpeaker.frame.minX,
                    "\(prefix): phrase title does not overlap its speaker")
+
+        // The compact annotation is one action, including its explanatory
+        // text. Tapping its body should focus the source, not edit or speak.
+        let explanationPoint = insightExplanation.convert(CGPoint(x: insightExplanation.bounds.midX, y: insightExplanation.bounds.midY), to: insightAction)
+        let insightHit = insightAction.hitTest(explanationPoint, with: nil)
+        try expect(insightHit === insightAction || insightHit?.isDescendant(of: insightAction) == true,
+                   "\(prefix): annotation body remains part of the source-focus action")
+        let beforeInsightOffset = studyScroll.contentOffset
+        insightAction.sendActions(for: .touchUpInside)
+        layout(root, surface)
+        try expect(original.highlightedRange == originalText.range(of: "I’d like to") && snippets.isEmpty && hostActions == 0 && studyScroll.contentOffset == beforeInsightOffset,
+                   "\(prefix): annotation focus highlights its original source without speech, input changes or scrolling")
 
         for token in ["I’d", "I'll", "resource-intensive", "research"] {
             let expectedRange = originalText.range(of: token)
@@ -130,15 +146,26 @@ private enum SpeechSurfaceChecks {
 
         let unselectedSize = studyScroll.contentSize
         let unselectedOffset = studyScroll.contentOffset
+        let originalFrame = original.frame
+        let overviewFrame = overview.frame
         let beforeSelection = snippets.count
-        try expect(selectionButton.isHidden && readingHint.bounds.height == 44,
-                   "\(prefix): an unselected original reserves one stable hint row")
+        try expect(selectionButton.isHidden && readingHint.bounds.height < 44,
+                   "\(prefix): the ordinary reading hint does not reserve a button-sized gap")
+        try expect(original.frame.maxY <= overview.frame.minY && overview.frame.maxY <= readingHint.frame.minY,
+                   "\(prefix): English and its meaning are consecutive, before the secondary interaction hint")
         original.selectedRange = originalText.range(of: " an agent platform ")
         layout(root, surface)
         try expect(!selectionButton.isHidden && selectionButton.isEnabled && selectionButton.bounds.height == 44,
                    "\(prefix): native selection reveals a visible44pt read-selection button")
-        try expect(snippets.count == beforeSelection && studyScroll.contentSize == unselectedSize && studyScroll.contentOffset == unselectedOffset,
-                   "\(prefix): selection alone neither speaks nor changes reading geometry")
+        try expect(snippets.count == beforeSelection && original.frame == originalFrame && overview.frame == overviewFrame && studyScroll.contentOffset == unselectedOffset,
+                   "\(prefix): revealing a selection action neither speaks nor moves the original, its meaning or the viewport")
+        try expect(studyScroll.contentSize.height > unselectedSize.height &&
+                   readingHint.bounds.contains(selectionButton.frame) &&
+                   readingHint.convert(readingHint.bounds, to: studyScroll).maxY <= firstInsight.convert(firstInsight.bounds, to: studyScroll).minY,
+                   "\(prefix): expanding the selection action increases scrollable content instead of clipping the button or covering notes")
+        let selectionHit = readingHint.hitTest(CGPoint(x: selectionButton.frame.midX, y: selectionButton.frame.maxY - 1), with: nil)
+        try expect(selectionHit === selectionButton || selectionHit?.isDescendant(of: selectionButton) == true,
+                   "\(prefix): the bottom edge of the selection action remains tappable after its row grows")
         selectionButton.sendActions(for: .touchUpInside)
         try expect(snippets.last == "an agent platform" && hostActions == 0 && original.text == english,
                    "\(prefix): visible selection action reads exact source without dispatching input or replacement")
@@ -171,7 +198,7 @@ private enum SpeechSurfaceChecks {
         original.clearSelection()
         layout(root, surface)
         try expect(studyScroll.contentSize == unselectedSize && studyScroll.contentOffset == unselectedOffset && hostActions == 0,
-                   "\(prefix): selection/clear cycles keep layout and host actions unchanged")
+                   "\(prefix): clearing selection restores compact content and retains the reading position without host actions")
 
         expressionSpeaker.sendActions(for: .touchUpInside)
         try expect(snippets.last == "make it up to you", "\(prefix): phrase speaker reads source, never template placeholders")
@@ -257,6 +284,45 @@ private enum SpeechSurfaceChecks {
         try expect(pendingOriginal === readyOriginal && readyOriginal.selectedRange == pendingRange,
                    "\(prefix): background analysis completion preserves the original view and current selection")
         try expect(studyScroll.contentOffset.y == 25, "\(prefix): background analysis completion preserves reading position")
+
+        // Switching from a deeply scrollable sentence to a lone greeting must
+        // remove all former notes and offsets. Selecting its only word must
+        // still expose a usable action without manufacturing empty sections.
+        let greeting = SentenceAnalysis(kind: "word", overview: "你好；用于打招呼或开启对话。", insights: [], expressions: [])
+        studyScroll.setContentOffset(CGPoint(x: 0, y: max(0, studyScroll.contentSize.height - studyScroll.bounds.height)), animated: false)
+        surface.setHint(text: "Hello", loading: false, isTranslation: true, canRetry: false)
+        surface.setAnalysis(available: true, expanded: true, english: "Hello", state: .ready(greeting))
+        surface.setSpeech(available: true, state: .idle, text: nil, english: "Hello")
+        layout(root, surface)
+        let greetingOriginal: StudyReadingTextView = try descendant(surface, "keyboard.analysisOriginal")
+        let greetingOverview: UILabel = try descendant(surface, "keyboard.analysisOverview")
+        let greetingHint: UIView = try descendant(surface, "keyboard.analysisReadingHint")
+        let greetingSelection: UIButton = try descendant(surface, "keyboard.analysisReadSelectionButton")
+        let greetingFrame = greetingOriginal.frame
+        try expect(studyScroll.contentOffset == .zero && studyScroll.contentSize.height == studyScroll.bounds.height,
+                   "\(prefix): a short greeting clears the previous long sentence's scroll extent")
+        try expect((try? descendant(surface, "keyboard.analysisInsightHeading", as: UILabel.self)) == nil &&
+                   (try? descendant(surface, "keyboard.analysisExpressionHeading", as: UILabel.self)) == nil,
+                   "\(prefix): a greeting does not inherit or fabricate usage and expression sections")
+        for _ in 0 ..< 3 {
+            greetingOriginal.selectedRange = NSRange(location: 0, length: 5)
+            layout(root, surface)
+            try expect(!greetingSelection.isHidden && greetingHint.bounds.contains(greetingSelection.frame) &&
+                       greetingOriginal.frame == greetingFrame && greetingOverview.frame.maxY <= greetingHint.frame.minY,
+                       "\(prefix): repeated greeting selection reveals a complete action without moving or covering text")
+            surface.setAnalysis(available: true, expanded: false, english: "Hello", state: .ready(greeting))
+            surface.frame.size.height = 260
+            layout(root, surface)
+            surface.frame.size.height = 440
+            surface.setAnalysis(available: true, expanded: true, english: "Hello", state: .ready(greeting))
+            layout(root, surface)
+            let reopenedGreeting: StudyReadingTextView = try descendant(surface, "keyboard.analysisOriginal")
+            try expect(reopenedGreeting === greetingOriginal && greetingOriginal.frame == greetingFrame &&
+                       greetingOriginal.selectedRange.length == 0 && greetingSelection.isHidden &&
+                       studyScroll.contentOffset == .zero && studyScroll.contentSize.height == studyScroll.bounds.height,
+                       "\(prefix): repeated compact collapse/reopen restores the full viewport and clears selection without stale content")
+        }
+        try render(surface, name: prefix + "-study-greeting")
         surface.setHint(text: english, loading: false, isTranslation: true, canRetry: false)
         surface.setAnalysis(available: true, expanded: true, english: english, state: .ready(analysis))
         surface.setSpeech(available: true, state: .idle, text: nil, english: english)

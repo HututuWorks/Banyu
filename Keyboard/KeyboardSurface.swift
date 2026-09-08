@@ -233,9 +233,9 @@ final class KeyboardSurface: UIView {
             guard let self, !self.analysisButton.isHidden else { return }
             self.onToggleAnalysis?()
         }, for: .touchUpInside)
-        analysisTitleLabel.text = "句子学习"
-        analysisTitleLabel.font = .systemFont(ofSize: 15, weight: .regular)
-        analysisTitleLabel.textColor = hintActionColor
+        analysisTitleLabel.text = "英语学习"
+        analysisTitleLabel.font = .systemFont(ofSize: 15, weight: .medium)
+        analysisTitleLabel.textColor = SentenceAnalysisPanel.learningText
         analysisTitleLabel.accessibilityIdentifier = "keyboard.analysisTitle"
         preeditLabel.font = .systemFont(ofSize: 11)
         preeditLabel.textColor = .secondaryLabel
