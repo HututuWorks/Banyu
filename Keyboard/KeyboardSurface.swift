@@ -169,6 +169,12 @@ final class KeyboardSurface: UIView {
         hintScroll.isDirectionalLockEnabled = true
         hintScroll.decelerationRate = .fast
         hintScroll.contentInsetAdjustmentBehavior = .never
+        if #available(iOS 26.0, *) {
+            // System scroll-edge blur can cover this entire one-line viewport.
+            // The fixed toolbar needs crisp text even when more lines follow.
+            hintScroll.topEdgeEffect.isHidden = true
+            hintScroll.bottomEdgeEffect.isHidden = true
+        }
         hintScroll.accessibilityIdentifier = "keyboard.hintScroll"
         hintLabel.numberOfLines = 0
         hintLabel.font = .systemFont(ofSize: 14, weight: .regular)

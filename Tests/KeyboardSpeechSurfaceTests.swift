@@ -91,6 +91,8 @@ private enum SpeechSurfaceChecks {
                 try expect(paragraph?.minimumLineHeight == 20 && paragraph?.maximumLineHeight == 20, "\(prefix): original20pt line rhythm")
                 try expect(!label.adjustsFontSizeToFitWidth && label.numberOfLines == 0, "\(prefix): unlimited content without font shrinking")
                 try expect(scroll.bounds.height == 20 && scroll.isPagingEnabled, "\(prefix): one-line vertical paging")
+                try expect(scroll.topEdgeEffect.isHidden && scroll.bottomEdgeEffect.isHidden,
+                           "\(prefix): system edge blur cannot cover the single English line")
                 try expect(scroll.contentSize.height > 40 && scroll.contentSize.width == scroll.bounds.width, "\(prefix): long English remains reachable without horizontal overflow")
                 try expect(scroll.frame.maxX + 4 == speech.frame.minX, "\(prefix): no unused width before controls")
                 try expect(speech.frame.maxX == action.frame.minX && action.frame.maxX == expand.frame.minX, "\(prefix): no extra control gaps")
