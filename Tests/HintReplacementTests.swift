@@ -11,6 +11,8 @@ private final class ReplacementHost {
     var insertions: [String] = []
     var delay: Duration = .zero
     var ignoreDeletes = false
+    var holdsDeleteAcknowledgements = false
+    private var pendingDeletes = 0
     var onDelete: (() -> Void)?
 
     init(_ state: HintDocumentSnapshot) { self.state = state }
@@ -18,7 +20,9 @@ private final class ReplacementHost {
     func deleteBackward() {
         deleteCalls += 1
         if !ignoreDeletes {
-            if delay == .zero {
+            if holdsDeleteAcknowledgements {
+                pendingDeletes += 1
+            } else if delay == .zero {
                 applyDelete()
             } else {
                 Task {
@@ -32,6 +36,16 @@ private final class ReplacementHost {
 
     private func applyDelete() {
         state = copy(before: String((state.before ?? "").dropLast()))
+    }
+
+    /// Explicitly release one host-side command after the executor has stopped.
+    /// The cancellation test must not depend on a sleeping Task being scheduled
+    /// before an unrelated wall-clock delay expires on a busy CI worker.
+    func acknowledgePendingDelete() -> Bool {
+        guard pendingDeletes > 0 else { return false }
+        pendingDeletes -= 1
+        applyDelete()
+        return true
     }
 
     func insertText(_ text: String) {
@@ -250,16 +264,18 @@ struct HintReplacementTests {
                    "Partial restoration must append exact deleted graphemes in original order")
 
         let pending = ReplacementHost(edit.originalSnapshot)
-        pending.delay = .milliseconds(20)
+        pending.holdsDeleteAcknowledgements = true
         var pendingTask: Task<HintReplacementExecutionResult, Never>?
         pending.onDelete = { pendingTask?.cancel() }
         pendingTask = Task { await pending.run(edit) }
         let pendingResult = await pendingTask!.value
-        try expect(pendingResult == .aborted && pending.insertions.isEmpty,
+        try expect(pendingResult == .aborted && pending.insertions.isEmpty && pending.state == edit.originalSnapshot,
                    "Cancellation with an unacknowledged host command must not issue a competing rollback")
-        try await Task.sleep(for: .milliseconds(30))
-        try expect(pending.deleteCalls == 1 && pending.state == edit.expectedSnapshot(afterDeleting: 1),
+        let acknowledged = pending.acknowledgePendingDelete()
+        try expect(acknowledged && pending.deleteCalls == 1 && pending.state == edit.expectedSnapshot(afterDeleting: 1),
                    "A delayed host may finish one issued command, but the executor issues no more")
+        try expect(!pending.acknowledgePendingDelete() && pending.insertions.isEmpty,
+                   "Cancellation leaves no additional pending deletion or insertion")
         print("PASS: interruption — host mutation, 150 ms timeout, verified partial restoration and pending-command cancellation")
     }
 }
