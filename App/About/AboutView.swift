@@ -30,7 +30,7 @@ struct AboutView: View {
                                detail: "伴语只在你点「用英文」后替换当前句。确认内容后，再由你发送。")
                 Divider().padding(.leading, 34)
                 AboutDetailRow(symbol: "lock", title: "只处理当前内容",
-                               detail: "云端服务翻译当前短句，并提前分析对应英文。API Key 保存在本机钥匙串。")
+                               detail: "云端服务翻译当前短句，并提前分析对应英文。点小喇叭后，千问才生成语音。API Key 保存在本机钥匙串。")
             }.padding(20).appSurface()
 
             NavigationLink { OpenSourceNoticesView() } label: {

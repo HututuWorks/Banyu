@@ -17,6 +17,26 @@ private final class PendingTranslation: HintTranslating {
 private struct LifecycleFailure: Error { let message: String }
 
 @MainActor
+private final class LifecycleSpeechPlayer: SpeechAudioPlaying {
+    var onStop: (() -> Void)?
+    var plays = 0
+    func playLoop(_ data: Data) throws { plays += 1 }
+    func stop() {}
+}
+
+@MainActor
+private final class LifecyclePendingSpeech: SpeechSynthesizing {
+    var started = false
+    var cancelled = false
+    func synthesize(_ text: String) async throws -> Data {
+        started = true
+        do { try await Task.sleep(nanoseconds: 30_000_000_000) }
+        catch { cancelled = Task.isCancelled; throw error }
+        return Data()
+    }
+}
+
+@MainActor
 private final class LifecycleDocumentProxy: NSObject, UITextDocumentProxy {
     var text = ""
     let documentIdentifier = UUID()
@@ -135,7 +155,91 @@ extension KeyboardViewController {
                        "actual editing must still invalidate undo")
         } else { throw LifecycleFailure(message: "test needs an eligible replacement") }
         controller.viewWillDisappear(false)
+        try await verifySpeechLifecycle(expect: expect)
         print("Keyboard controller: 2 notification paths and page/undo behavior, \(checks) checks passed")
+    }
+
+    @MainActor
+    private static func verifySpeechLifecycle(expect: (@autoclosure () -> Bool, String) throws -> Void) async throws {
+        let controller = LifecycleTestController()
+        let player = LifecycleSpeechPlayer()
+        controller.speechSession = SpeechPlaybackSession(player: player)
+        controller.loadViewIfNeeded()
+        controller.viewWillAppear(false)
+        func prepare(_ provider: TranslationProvider, revision: String = "qwen-1") {
+            TranslationSettingsStore.shared.snapshot = .init(provider: provider, apiKey: "fixture-key", revision: revision)
+            controller.reloadSpeechSettings()
+            controller.proxy.text = "你好"
+            controller.displayedHint = .init(status: .ready, source: "你好", displayText: "Hello")
+            controller.hintSnapshot = controller.documentSnapshot()
+            controller.observedSnapshot = controller.documentSnapshot()
+            controller.renderHint()
+        }
+        for provider in [TranslationProvider.apple, .custom] {
+            prepare(provider)
+            controller.toggleSpeech()
+            try expect(controller.speechContext == nil && controller.speechSession.state == .idle,
+                       "Apple/custom must not authorize retained Qwen credentials for speech")
+        }
+        prepare(.qwen)
+        try expect(controller.speechContext?.english == "Hello", "Qwen exposes speech for the verified ready English")
+        try expect(controller.speechSession.state == .idle && player.plays == 0,
+                   "rendering and preparing learning must never generate or play speech automatically")
+
+        func startPending() async -> LifecyclePendingSpeech {
+            let synthesizer = LifecyclePendingSpeech()
+            controller.speechSession.toggle(text: "Hello", configurationID: "qwen-1", synthesizer: synthesizer)
+            for _ in 0..<20 where !synthesizer.started { await Task.yield() }
+            return synthesizer
+        }
+        let cancelledByTap = await startPending()
+        try expect(cancelledByTap.started, "speech must start before testing a second tap")
+        controller.toggleSpeech() // It must stop, never call the newly constructed real service.
+        try expect(controller.speechSession.state == .idle, "second speaker tap cancels generation")
+        for _ in 0..<20 where !cancelledByTap.cancelled { await Task.yield() }
+        try expect(cancelledByTap.cancelled, "speaker cancellation must reach the service")
+
+        let cancelledByEdit = await startPending()
+        controller.perform(.numbers)
+        controller.perform(.symbols)
+        controller.perform(.letters)
+        try expect(controller.speechSession.state == .loading, "key page changes preserve the current speech request")
+        controller.perform(.insert("!"))
+        try expect(controller.speechSession.state == .idle && controller.speechContext == nil,
+                   "editing stops speech and removes the old sentence context immediately")
+        for _ in 0..<20 where !cancelledByEdit.cancelled { await Task.yield() }
+        try expect(cancelledByEdit.cancelled, "editing cancels in-flight speech")
+
+        for notification in [NSNotification.Name.NSExtensionHostWillResignActive,
+                             NSNotification.Name.NSExtensionHostDidEnterBackground] {
+            controller.hostActive = true
+            prepare(.qwen)
+            let pending = await startPending()
+            NotificationCenter.default.post(name: notification, object: nil)
+            try expect(controller.speechSession.state == .idle && controller.speechContext == nil,
+                       "host deactivation stops and clears speech")
+            for _ in 0..<20 where !pending.cancelled { await Task.yield() }
+            try expect(pending.cancelled, "host deactivation cancels the service")
+        }
+        controller.hostActive = true
+        prepare(.qwen)
+        _ = await startPending()
+        TranslationSettingsStore.shared.snapshot = .init(provider: .apple, apiKey: "fixture-key", revision: "apple-2")
+        controller.toggleSpeech()
+        try expect(controller.speechSession.state == .idle && controller.speechContext == nil,
+                   "speaker tap revalidates settings and cannot reuse a key after switching to Apple")
+
+        prepare(.qwen)
+        _ = await startPending()
+        controller.didReceiveMemoryWarning()
+        try expect(controller.speechSession.state == .idle && controller.speechContext == nil,
+                   "memory pressure releases speech and its cached data")
+        prepare(.qwen)
+        _ = await startPending()
+        controller.viewWillDisappear(false)
+        try expect(controller.speechSession.state == .idle && controller.speechContext == nil && player.plays == 0,
+                   "dismissal clears speech; no fixture audio or stale result reaches playback")
+        TranslationSettingsStore.shared.snapshot = .init(provider: .apple)
     }
 }
 

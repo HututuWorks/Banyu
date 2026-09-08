@@ -28,6 +28,9 @@ xcrun --sdk macosx swiftc -swift-version 6 -parse-as-library \
   "$source_root/Shared/SentenceAnalysis.swift" \
   "$source_root/Shared/SentenceAnalysisSession.swift" \
   "$source_root/Shared/KeyboardStudyLayout.swift" \
+  "$source_root/Shared/QwenSpeechSynthesizer.swift" \
+  "$source_root/Shared/SpeechPlaybackSession.swift" \
+  "$source_root/Keyboard/KeyboardAudioPlayer.swift" \
   "$source_root/Keyboard/KeyboardSurface.swift" \
   "$source_root/Keyboard/SentenceAnalysisPanel.swift" \
   "$source_root/Keyboard/NineKeyPinyinDecoder.swift" \

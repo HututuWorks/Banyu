@@ -25,7 +25,7 @@ struct QwenTranslationSettingsView: View {
         Form {
             Section {
                 PageIntroduction(symbol: "cloud", title: "千问翻译",
-                                 detail: "连接你的千问账户，在键盘里翻译与学习。")
+                                 detail: "连接你的千问账户，在键盘里翻译、学习与听读。")
                     .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
                     .listRowBackground(Color.clear)
             }
@@ -77,6 +77,13 @@ struct QwenTranslationSettingsView: View {
                     .listRowBackground(Color.clear)
             } footer: {
                 Text("启用后，当前短句会发送给千问，按接口用量计费。网络暂时不可用时会尝试苹果翻译。")
+            }
+
+            Section {
+                Label("点小喇叭听英文，再点停止", systemImage: "speaker.wave.2")
+                    .font(.subheadline)
+            } header: { Text("英文听读") } footer: {
+                Text("复用这枚密钥，使用千问 AI 语音，以正常语速循环朗读。点击后才生成音频并单独计费，同一句在本地重复播放。首次播放需要联网；密钥需有语音模型权限。")
             }
 
             if hasSavedKey {

@@ -39,6 +39,7 @@ final class KeyboardSurface: UIView {
     var onUndoEnglish: (() -> Void)?
     var onToggleAnalysis: (() -> Void)?
     var onRetryAnalysis: (() -> Void)?
+    var onToggleSpeech: (() -> Void)?
     var configureGlobe: ((UIButton) -> Void)? {
         didSet { if let globeKey { configureGlobe?(globeKey) } }
     }
@@ -55,6 +56,14 @@ final class KeyboardSurface: UIView {
     private let hintActionButton = UIButton(type: .system)
     private var hintAction: HintAction = .none
     private let analysisButton = UIButton(type: .system)
+    private let speechButton = UIButton(type: .system)
+    private let speechSpinner = UIActivityIndicatorView(style: .medium)
+    private var speechAvailable = false
+    private var speechIsLoading = false
+    private let speechErrorToast = UIView()
+    private let speechErrorLabel = UILabel()
+    private var speechErrorDismissal: Task<Void, Never>?
+    private var lastSpeechFailure: String?
     private let analysisTitleLabel = UILabel()
     private let analysisPanel = SentenceAnalysisPanel()
     private let headerDivider = UIView()
@@ -138,6 +147,7 @@ final class KeyboardSurface: UIView {
             guard let self else { return }
             self.headerDivider.isHidden = self.analysisPanel.isHidden || !scrolled
         }
+        buildSpeechErrorToast()
         rebuildKeys()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -147,7 +157,7 @@ final class KeyboardSurface: UIView {
         header.heightAnchor.constraint(equalToConstant: 44).isActive = true
         mainStack.addArrangedSubview(header)
         [hintScroll, preeditLabel, candidateList, spellingList, emptyCandidatesLabel,
-         spinner, retryButton, hintActionButton, analysisButton, analysisTitleLabel,
+         spinner, retryButton, hintActionButton, speechButton, analysisButton, analysisTitleLabel,
          headerDivider].forEach { header.addSubview($0) }
         headerDivider.backgroundColor = .separator
         headerDivider.isUserInteractionEnabled = false
@@ -188,6 +198,21 @@ final class KeyboardSurface: UIView {
             case .undoEnglish: self.onUndoEnglish?()
             }
         }, for: .touchUpInside)
+        speechButton.accessibilityIdentifier = "keyboard.speechToggle"
+        speechButton.tintColor = hintActionColor
+        speechButton.addAction(UIAction { [weak self] _ in
+            guard let self, !self.speechButton.isHidden else { return }
+            self.dismissSpeechError()
+            self.onToggleSpeech?()
+        }, for: .touchUpInside)
+        speechSpinner.accessibilityIdentifier = "keyboard.speechLoading"
+        speechSpinner.isAccessibilityElement = false
+        speechSpinner.isUserInteractionEnabled = false
+        speechSpinner.hidesWhenStopped = true
+        speechSpinner.color = hintActionColor
+        speechSpinner.transform = CGAffineTransform(scaleX: 0.75, y: 0.75)
+        speechButton.addSubview(speechSpinner)
+        setSpeech(available: false, state: .idle)
         analysisButton.tintColor = hintActionColor
         analysisButton.titleLabel?.font = .systemFont(ofSize: 13, weight: .regular)
         analysisButton.setTitleColor(hintActionColor, for: .normal)
@@ -226,12 +251,16 @@ final class KeyboardSurface: UIView {
             guard !control.isHidden else { control.frame = .zero; return }
             trailing -= width
             control.frame = CGRect(x: trailing, y: 0, width: width, height: 44)
-            trailing -= 4
         }
         place(analysisButton, width: 44)
         place(hintActionButton, width: 56)
+        place(speechButton, width: 44)
         place(retryButton, width: 32)
         place(spinner, width: 24)
+        // Adjacent full-sized targets leave the maximum width for English.
+        // Only the boundary between reading and controls needs a visual gap.
+        if trailing < headerWidth { trailing -= 4 }
+        speechSpinner.center = CGPoint(x: speechButton.bounds.midX, y: speechButton.bounds.midY)
         let contentWidth = max(0, trailing)
         analysisTitleLabel.frame = CGRect(x: 14, y: 0, width: max(0, contentWidth - 22), height: 44)
         headerDivider.frame = CGRect(x: 14, y: 43.5, width: max(0, headerWidth - 28), height: 0.5)
@@ -261,6 +290,96 @@ final class KeyboardSurface: UIView {
         candidateList.frame = listFrame
         spellingList.frame = listFrame
         emptyCandidatesLabel.frame = listFrame.insetBy(dx: 8, dy: 0)
+        let toastWidth = max(0, bounds.width - 24)
+        let toastTextWidth = max(0, toastWidth - 24)
+        let toastTextHeight = min(38, ceil(speechErrorLabel.sizeThatFits(
+            CGSize(width: toastTextWidth, height: .greatestFiniteMagnitude)).height))
+        speechErrorToast.frame = CGRect(x: 12, y: 52, width: toastWidth, height: toastTextHeight + 20)
+        speechErrorLabel.frame = CGRect(x: 12, y: 10, width: toastTextWidth, height: toastTextHeight)
+    }
+
+    private func buildSpeechErrorToast() {
+        speechErrorToast.accessibilityIdentifier = "keyboard.speechError"
+        speechErrorToast.isUserInteractionEnabled = false
+        speechErrorToast.backgroundColor = .secondarySystemGroupedBackground
+        speechErrorToast.layer.cornerRadius = 10
+        speechErrorToast.layer.shadowColor = UIColor.black.cgColor
+        speechErrorToast.layer.shadowOpacity = 0.1
+        speechErrorToast.layer.shadowRadius = 8
+        speechErrorToast.layer.shadowOffset = CGSize(width: 0, height: 2)
+        speechErrorToast.isHidden = true
+        speechErrorLabel.numberOfLines = 2
+        speechErrorLabel.font = .systemFont(ofSize: 13, weight: .regular)
+        speechErrorLabel.textColor = .secondaryLabel
+        speechErrorToast.addSubview(speechErrorLabel)
+        addSubview(speechErrorToast)
+    }
+
+    private func showSpeechError(_ message: String) {
+        dismissSpeechError()
+        speechErrorLabel.text = message
+        speechErrorToast.isHidden = false
+        bringSubviewToFront(speechErrorToast)
+        setNeedsLayout()
+        if window != nil { UIAccessibility.post(notification: .announcement, argument: message) }
+        speechErrorDismissal = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(3)) }
+            catch { return }
+            self?.dismissSpeechError()
+        }
+    }
+
+    private func dismissSpeechError() {
+        speechErrorDismissal?.cancel()
+        speechErrorDismissal = nil
+        speechErrorToast.isHidden = true
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { dismissSpeechError() }
+    }
+
+    /// Playback and credentials remain owned by the controller. Every visible
+    /// state keeps the same 44 pt target, including cancel during loading.
+    func setSpeech(available: Bool, state: SpeechPlaybackSession.State) {
+        speechAvailable = available
+        speechIsLoading = false
+        let symbol: String
+        speechButton.tintColor = hintActionColor
+        speechButton.accessibilityValue = nil
+        if case .failed = state {} else { lastSpeechFailure = nil; dismissSpeechError() }
+        switch state {
+        case .idle:
+            symbol = "speaker.wave.2"
+            speechButton.accessibilityLabel = "朗读英文"
+            speechButton.accessibilityHint = "正常语速循环朗读，再次点按停止"
+        case .loading:
+            symbol = ""
+            speechIsLoading = true
+            speechButton.accessibilityLabel = "取消朗读"
+            speechButton.accessibilityValue = "正在准备语音"
+            speechButton.accessibilityHint = "再次点按取消"
+        case .playing:
+            symbol = "speaker.wave.2"
+            speechButton.tintColor = .systemBlue
+            speechButton.accessibilityLabel = "停止朗读"
+            speechButton.accessibilityValue = "正在循环朗读"
+            speechButton.accessibilityHint = "点按停止"
+        case let .failed(message):
+            symbol = "exclamationmark.circle"
+            speechButton.accessibilityLabel = "重试朗读"
+            speechButton.accessibilityValue = message
+            speechButton.accessibilityHint = "点按重试朗读"
+            if available, lastSpeechFailure != message {
+                lastSpeechFailure = message
+                showSpeechError(message)
+            }
+        }
+        speechButton.setImage(symbol.isEmpty ? nil : UIImage(systemName: symbol,
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .regular)), for: .normal)
+        if !available { lastSpeechFailure = nil; dismissSpeechError() }
+        updateCompositionPresentation()
     }
 
     func setHint(text: String, loading: Bool, isTranslation: Bool, canRetry: Bool) {
@@ -409,6 +528,10 @@ final class KeyboardSurface: UIView {
         else { spinner.stopAnimating() }
         retryButton.isHidden = showsComposition || !hintCanRetry
         hintActionButton.isHidden = showsComposition || hintIsLoading || hintCanRetry || hintAction == .none
+        speechButton.isHidden = showsComposition || hintIsLoading || hintCanRetry || !hintIsTranslation || !speechAvailable
+        if speechButton.isHidden { speechSpinner.stopAnimating(); dismissSpeechError() }
+        else if speechIsLoading { speechSpinner.startAnimating() }
+        else { speechSpinner.stopAnimating() }
         analysisButton.isHidden = showsComposition || hintIsLoading || hintCanRetry || !analysisAvailable || !hintIsTranslation
         analysisButton.setTitle(showsAnalysis ? "收起" : nil, for: .normal)
         analysisButton.setImage(showsAnalysis ? nil : UIImage(systemName: "chevron.down",
@@ -904,6 +1027,24 @@ private final class KeyboardKey: UIButton {
 }
 
 @MainActor
+private final class KeyboardCandidateFlowLayout: UICollectionViewFlowLayout {
+    override func shouldInvalidateLayout(forBoundsChange newBounds: CGRect) -> Bool {
+        // The composition line changes the list from 44 to 31 pt. Invalidate
+        // cached cell heights as the collection resizes, before its next layout.
+        newBounds.size != collectionView?.bounds.size || super.shouldInvalidateLayout(forBoundsChange: newBounds)
+    }
+
+    override func invalidationContext(forBoundsChange newBounds: CGRect) -> UICollectionViewLayoutInvalidationContext {
+        let context = super.invalidationContext(forBoundsChange: newBounds)
+        if newBounds.size != collectionView?.bounds.size,
+           let flowContext = context as? UICollectionViewFlowLayoutInvalidationContext {
+            flowContext.invalidateFlowLayoutDelegateMetrics = true
+        }
+        return context
+    }
+}
+
+@MainActor
 private final class KeyboardCandidateList: UIView, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
     private let font: UIFont
     private let horizontalPadding: CGFloat
@@ -916,7 +1057,7 @@ private final class KeyboardCandidateList: UIView, UICollectionViewDataSource, U
     init(fontSize: CGFloat, horizontalPadding: CGFloat) {
         font = .systemFont(ofSize: fontSize)
         self.horizontalPadding = horizontalPadding
-        let layout = UICollectionViewFlowLayout()
+        let layout = KeyboardCandidateFlowLayout()
         layout.scrollDirection = .horizontal
         layout.minimumLineSpacing = 0
         layout.minimumInteritemSpacing = 0
@@ -925,6 +1066,9 @@ private final class KeyboardCandidateList: UIView, UICollectionViewDataSource, U
         collection.backgroundColor = .clear
         collection.showsHorizontalScrollIndicator = false
         collection.alwaysBounceHorizontal = false
+        // The keyboard already owns its safe-area budget; the candidate row
+        // must not inherit a host navigation bar or window title-bar inset.
+        collection.contentInsetAdjustmentBehavior = .never
         collection.dataSource = self
         collection.delegate = self
         collection.register(KeyboardCandidateCell.self, forCellWithReuseIdentifier: "candidate")

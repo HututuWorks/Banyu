@@ -60,6 +60,10 @@ def main():
             response = 'QwenTransportResponse' if path.name == 'QwenTranslator.swift' else 'SentenceAnalysisTransportResponse'
             text = replace_body(text, f'func send(_ request: URLRequest) async throws -> {response} {{',
                                 '{ throw URLError(.notConnectedToInternet) }')
+        if path.name == 'QwenSpeechSynthesizer.swift':
+            text = replace_body(text,
+                                'func send(_ request: URLRequest, maximumBytes: Int) async throws -> QwenSpeechResponse {',
+                                '{ throw URLError(.notConnectedToInternet) }')
         if path.name == 'AppleLanguagePacksView.swift':
             text = replace_body(text, 'private func refreshStatus(for language: TranslationLanguage) async',
                                 '{ isInstalled = true; statusText = "\\(language.name) → 英文已就绪" }')

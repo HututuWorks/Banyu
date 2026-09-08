@@ -10,6 +10,14 @@ import OSLog
 final class KeyboardViewController: UIInputViewController {
     private let surface = KeyboardSurface()
     private let analysisSession = SentenceAnalysisSession()
+    private var speechSession = SpeechPlaybackSession(player: KeyboardAudioPlayer())
+    private var speechSettings: TranslationSettingsSnapshot?
+    private struct SpeechContext: Equatable {
+        let english: String
+        let snapshot: HintDocumentSnapshot
+        let configurationID: String
+    }
+    private var speechContext: SpeechContext?
     private var analysisExpanded = false
     private var hostActive = false
     private var analysisStartedAt: CFTimeInterval?
@@ -146,6 +154,8 @@ final class KeyboardViewController: UIInputViewController {
         surface.onUndoEnglish = { [weak self] in self?.undoEnglish() }
         surface.onToggleAnalysis = { [weak self] in self?.toggleAnalysis() }
         surface.onRetryAnalysis = { [weak self] in self?.requestAnalysis(retry: true) }
+        surface.onToggleSpeech = { [weak self] in self?.toggleSpeech() }
+        speechSession.onChange = { [weak self] in self?.renderSpeech() }
         analysisSession.onChange = { [weak self] in self?.analysisDidChange() }
         for notification in [NSNotification.Name.NSExtensionHostWillResignActive,
                              NSNotification.Name.NSExtensionHostDidEnterBackground] {
@@ -159,6 +169,7 @@ final class KeyboardViewController: UIInputViewController {
             .sink { [weak self] _ in
                 guard let self, self.visible else { return }
                 self.hostActive = true
+                self.reloadSpeechSettings()
                 self.synchronizeAfterHostChange()
                 self.prepareAnalysis()
             }
@@ -178,6 +189,7 @@ final class KeyboardViewController: UIInputViewController {
         super.viewWillAppear(animated)
         visible = true
         hostActive = true
+        reloadSpeechSettings()
         // Settings may have changed in the containing app while this extension
         // was retained. Re-read the provider even for an unchanged host sentence.
         hintModel.reset()
@@ -283,6 +295,7 @@ final class KeyboardViewController: UIInputViewController {
 
     override func textWillChange(_ textInput: (any UITextInput)?) {
         super.textWillChange(textInput)
+        invalidateSpeech()
         invalidateAnalysis()
         guard replacementID == nil else { return }
         // Stop an in-flight result from appearing while another document is being activated.
@@ -301,6 +314,7 @@ final class KeyboardViewController: UIInputViewController {
 
     override func selectionWillChange(_ textInput: (any UITextInput)?) {
         super.selectionWillChange(textInput)
+        invalidateSpeech()
         invalidateAnalysis()
         guard replacementID == nil else { return }
         hintModel.reset()
@@ -540,6 +554,7 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func invalidateReplacement() {
+        invalidateSpeech()
         invalidateAnalysis()
         documentRevision &+= 1
         replacementUndo.invalidate()
@@ -563,7 +578,7 @@ final class KeyboardViewController: UIInputViewController {
 
     private func renderHint() {
         guard replacementID == nil else { return }
-        defer { refreshAnalysis() }
+        defer { refreshAnalysis(); refreshSpeech() }
         if visible, !hasComposition, replacementUndo.isAvailable(currentSnapshot: documentSnapshot()) {
             surface.setHint(text: undoSource, loading: false, isTranslation: true, canRetry: false)
             surface.setHintAction(.undoEnglish)
@@ -583,6 +598,56 @@ final class KeyboardViewController: UIInputViewController {
               !replacementUndo.isAvailable(currentSnapshot: documentSnapshot()) else { return nil }
         let text = displayedHint.displayText.trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? nil : text
+    }
+
+    // Speech shares only the active Beijing Qwen configuration. Retained Qwen
+    // keys in Apple/custom mode never authorize a cloud speech request.
+    private func reloadSpeechSettings() {
+        let settings = try? TranslationSettingsStore.shared.load()
+        if speechSettings != settings { invalidateSpeech() }
+        speechSettings = settings
+    }
+
+    private func availableSpeechContext() -> SpeechContext? {
+        guard let settings = speechSettings, settings.provider == .qwen,
+              let key = settings.apiKey, !key.isEmpty,
+              let english = availableAnalysisText() else { return nil }
+        return SpeechContext(english: english, snapshot: documentSnapshot(),
+                             configurationID: settings.revision)
+    }
+
+    private func refreshSpeech() {
+        let context = availableSpeechContext()
+        if speechContext != context {
+            speechContext = context
+            speechSession.stop(clearCache: true)
+        }
+        renderSpeech()
+    }
+
+    private func renderSpeech() {
+        surface.setSpeech(available: speechContext != nil, state: speechSession.state)
+    }
+
+    private func invalidateSpeech() {
+        speechContext = nil
+        speechSession.stop(clearCache: true)
+        renderSpeech()
+    }
+
+    private func toggleSpeech() {
+        // Revalidate current settings and host snapshot at the actual tap. The
+        // service is created only here, never by translation/analysis prefetch.
+        reloadSpeechSettings()
+        refreshSpeech()
+        guard let context = speechContext, let key = speechSettings?.apiKey else { return }
+        speechSession.toggle(text: context.english, configurationID: context.configurationID,
+                             synthesizer: QwenSpeechSynthesizer(apiKey: key))
+    }
+
+    override func didReceiveMemoryWarning() {
+        super.didReceiveMemoryWarning()
+        invalidateSpeech()
     }
 
     private func invalidateAnalysis() {
@@ -708,6 +773,7 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func executeReplacement(_ plan: HintReplacementPlan, original: String, isUndo: Bool) {
+        invalidateSpeech()
         invalidateAnalysis()
         stopDeleting()
         let token = UUID()

@@ -20,12 +20,17 @@ final class SelectedHintTranslator: HintTranslating {
 enum HintDiagnostics {
     static func record(stage: String, language: String = "", details: [String: String] = [:]) {}
 }
-enum TranslationProvider { case apple, qwen }
-struct TranslationSettingsSnapshot: Equatable { let provider: TranslationProvider }
+enum TranslationProvider { case apple, qwen, custom }
+struct TranslationSettingsSnapshot: Equatable {
+    let provider: TranslationProvider
+    var apiKey: String? = nil
+    var revision: String = "test"
+}
 @MainActor
 final class TranslationSettingsStore {
     static let shared = TranslationSettingsStore()
-    func load() throws -> TranslationSettingsSnapshot { .init(provider: .apple) }
+    var snapshot = TranslationSettingsSnapshot(provider: .apple)
+    func load() throws -> TranslationSettingsSnapshot { snapshot }
 }
 @MainActor
 protocol SentenceAnalyzing {

@@ -48,6 +48,8 @@ struct KeyboardTryoutView: View {
                                detail: "长按地球键，选择26键或九宫格。")
                 AboutDetailRow(symbol: "arrow.triangle.2.circlepath", title: "换成英文，再决定发送",
                                detail: "点「用英文」替换，点「撤销」恢复。继续编辑后，撤销会失效。")
+                AboutDetailRow(symbol: "speaker.wave.2", title: "听听这句英文",
+                               detail: "使用千问时，点小喇叭循环听，再点停止。首次播放会生成 AI 语音。")
             }.padding(.horizontal, 4)
         }
         .scrollDismissesKeyboard(.interactively)

@@ -13,13 +13,14 @@
 - 轻量英文提示栏；长句保持字号，上下滑动阅读。
 - 显式替换与一次撤销；不会自动发送消息。
 - 约半屏的整句精读：原文、关键用法和实用表达。支持的云端服务提前分析，展开即可复用结果。
+- 千问英文听读：点小喇叭生成语音并正常语速循环，再点停止。同一句音频在当前键盘会话内复用，不重复调用生成接口。
 - 系统字体、浅深色外观，用户提供的伴语 Logo。
 
 ## 开发环境
 
 - macOS 26、完整 Xcode 26.4 或更新版本、Swift 6、Python 3。
 - 目标为 iPhone，最低 iOS 26.0。最新本地验证使用 Xcode 26.6。
-- 当前版本：0.1.0 / Build28。App 与两个键盘扩展必须一起构建。
+- 当前版本：0.1.0 / Build29。App 与两个键盘扩展必须一起构建。
 
 ```sh
 python3 scripts/generate-project.py
@@ -35,7 +36,7 @@ EHK_CONFIGURATION=Release scripts/xcode-project.sh build-device CODE_SIGNING_ALL
 | --- | --- |
 | `App/` | 按功能组织的 SwiftUI 页面、共享界面组件和品牌资源 |
 | `Keyboard/` | UIKit 键盘、拼音桥接、九宫格适配与学习面板 |
-| `Shared/` | 翻译、设置、句子分析、请求状态和替换规则 |
+| `Shared/` | 翻译、设置、句子分析、语音请求与播放状态、替换规则 |
 | `Config/` | 生成的 Info.plist、共享签名配置和 entitlements |
 | `Tests/` | 可重复的本地回归与隔离 UI 验证 |
 | `Resources/` | 实际使用的拼音词典 |
@@ -51,6 +52,7 @@ EHK_CONFIGURATION=Release scripts/xcode-project.sh build-device CODE_SIGNING_ALL
 2. 点开每个已添加的伴语键盘，分别开启「允许完全访问」。
 3. 在输入框长按地球键，切换到伴语。主 App 的「试用键盘」可用于检查。
 4. 使用苹果翻译时先准备所需语言包；使用云端服务时先测试配置，再主动启用。
+5. 使用千问时，英文右侧的小喇叭可循环听读。首次点击才请求 AI 语音并单独计费；需有语音模型权限。当前支持600字符以内的英文，超过会提示，不会截断。
 
 ## 更多说明
 
