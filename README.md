@@ -2,6 +2,8 @@
 <h1 align="center">伴语 · Banyu</h1>
 <p align="center">照常输入，英文随行。</p>
 
+[![Build and test](https://github.com/SciToolsmith/Banyu/actions/workflows/ci.yml/badge.svg)](https://github.com/SciToolsmith/Banyu/actions/workflows/ci.yml)
+
 伴语是一个 iPhone 中文键盘：正常打字时查看英文提示，主动点「用英文」替换当前句，也可以展开学习英文用法。主 App 用于试用、管理键盘和配置翻译服务。
 
 ## 功能
