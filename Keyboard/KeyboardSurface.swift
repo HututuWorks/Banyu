@@ -359,7 +359,7 @@ final class KeyboardSurface: UIView {
         case .idle:
             symbol = "speaker.wave.2"
             speechButton.accessibilityLabel = "朗读英文"
-            speechButton.accessibilityHint = "正常语速循环朗读，再次点按停止"
+            speechButton.accessibilityHint = "正常语速朗读一遍，朗读中再次点按停止"
         case .loading:
             symbol = ""
             speechIsLoading = true
@@ -370,7 +370,7 @@ final class KeyboardSurface: UIView {
             symbol = "speaker.wave.2"
             speechButton.tintColor = .systemBlue
             speechButton.accessibilityLabel = "停止朗读"
-            speechButton.accessibilityValue = "正在循环朗读"
+            speechButton.accessibilityValue = "正在朗读"
             speechButton.accessibilityHint = "点按停止"
         case let .failed(message):
             symbol = "exclamationmark.circle"

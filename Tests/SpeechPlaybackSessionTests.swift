@@ -11,13 +11,14 @@ private final class FakeSpeechPlayer: SpeechAudioPlaying {
     var onPlay: (() -> Void)?
     var played: [Data] = []
     var stops = 0
-    func playLoop(_ data: Data) throws {
+    func playOnce(_ data: Data) throws {
         if let playbackError { throw playbackError }
         played.append(data)
         onPlay?()
     }
     func stop() { stops += 1 }
     func interrupt() { onStop?() }
+    func finish() { onStop?() }
 }
 
 @MainActor
@@ -52,6 +53,8 @@ struct SpeechPlaybackSessionTests {
 
     static func main() async throws {
         try await localReplayAndClear()
+        try await naturalCompletionAndCachedReplay()
+        try await completionDuringPlaybackStartup()
         try await cancelWhileLoading()
         try await replacementIgnoresStaleResults()
         try await configurationInvalidatesCache()
@@ -62,7 +65,7 @@ struct SpeechPlaybackSessionTests {
         try await playbackStartInterruption()
         try await ownerReleaseCancelsAndStops()
         try await emptyTextAndNoDuplicateIdleNotifications()
-        print("Speech playback session: 11 cases, \(assertions) assertions passed.")
+        print("Speech playback session: 13 cases, \(assertions) assertions passed.")
     }
 
     private static func check(_ condition: @autoclosure () -> Bool, _ message: String) throws {
@@ -97,6 +100,48 @@ struct SpeechPlaybackSessionTests {
         await start(session, synth)
         try check(synth.calls.count == 2 && session.state == .loading, "Explicit clear removes cached audio")
         try synth.complete(1, .success(audio)); await settle()
+        session.stop()
+    }
+
+    private static func naturalCompletionAndCachedReplay() async throws {
+        let player = FakeSpeechPlayer(), synth = ControlledSpeechSynthesizer()
+        let session = SpeechPlaybackSession(player: player)
+        var states: [SpeechPlaybackSession.State] = []
+        session.onChange = { [weak session] in
+            if let state = session?.state { states.append(state) }
+        }
+        await start(session, synth)
+        try synth.complete(0, .success(audio)); await settle()
+        player.finish(); await settle()
+        try check(session.state == .idle && states == [.loading, .playing, .idle],
+                  "Natural completion restores the idle speaker without another tap")
+        try check(player.played.count == 1 && synth.calls.count == 1,
+                  "Natural completion neither repeats playback nor generates more audio")
+
+        await start(session, synth)
+        try check(session.state == .playing && player.played == [audio, audio] && synth.calls.count == 1,
+                  "A tap after natural completion immediately replays the cached sentence")
+        player.finish(); await settle()
+        try check(session.state == .idle && player.played.count == 2 && synth.calls.count == 1,
+                  "Replayed audio also finishes once without a new synthesis")
+        let changesAfterCompletion = states.count
+        player.finish(); await settle()
+        try check(states.count == changesAfterCompletion,
+                  "Repeated completion while idle does not trigger duplicate UI updates")
+    }
+
+    private static func completionDuringPlaybackStartup() async throws {
+        let player = FakeSpeechPlayer(), synth = ControlledSpeechSynthesizer()
+        let session = SpeechPlaybackSession(player: player)
+        player.onPlay = { [weak player] in player?.finish() }
+        await start(session, synth)
+        try synth.complete(0, .success(audio)); await settle()
+        try check(session.state == .idle,
+                  "A completion delivered during startup cannot leave the speaker playing")
+        player.onPlay = nil
+        await start(session, synth)
+        try check(session.state == .playing && synth.calls.count == 1 && player.played.count == 2,
+                  "Early completion preserves audio for a later explicit replay")
         session.stop()
     }
 

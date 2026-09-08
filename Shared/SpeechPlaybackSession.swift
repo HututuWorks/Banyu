@@ -8,14 +8,14 @@ enum SpeechPlaybackError: Error, Equatable, Sendable {
 
 @MainActor
 protocol SpeechAudioPlaying: AnyObject {
-    /// External stops, such as a phone call or disconnected headphones.
+    /// Natural completion or external stops, such as a phone call or disconnected headphones.
     var onStop: (() -> Void)? { get set }
-    func playLoop(_ data: Data) throws
+    func playOnce(_ data: Data) throws
     func stop()
 }
 
 /// A tap starts or stops the current sentence. Audio exists only in memory and
-/// is reused for local replay, never synthesized again for each loop.
+/// is reused when the user taps to replay after completion or a manual stop.
 @MainActor
 final class SpeechPlaybackSession {
     enum State: Equatable {
@@ -123,7 +123,7 @@ final class SpeechPlaybackSession {
     private func beginPlayback(_ audio: Data, requestID: UUID) {
         guard token == requestID else { return }
         do {
-            try player.playLoop(audio)
+            try player.playOnce(audio)
             // A route interruption can arrive while the player is starting.
             guard token == requestID else { return }
             update(.playing)

@@ -47,7 +47,7 @@ final class KeyboardAudioPlayer: NSObject, SpeechAudioPlaying, AVAudioPlayerDele
         }
     }
 
-    func playLoop(_ data: Data) throws {
+    func playOnce(_ data: Data) throws {
         stop()
         let token = UUID()
         playbackToken = token
@@ -59,7 +59,7 @@ final class KeyboardAudioPlayer: NSObject, SpeechAudioPlaying, AVAudioPlayerDele
                 throw SpeechPlaybackError.invalidAudio
             }
             audio.delegate = self
-            audio.numberOfLoops = -1
+            audio.numberOfLoops = 0
             audio.enableRate = false
             audio.rate = 1
             guard audio.prepareToPlay() else { throw SpeechPlaybackError.invalidAudio }

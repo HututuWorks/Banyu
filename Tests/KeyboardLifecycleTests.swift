@@ -20,7 +20,7 @@ private struct LifecycleFailure: Error { let message: String }
 private final class LifecycleSpeechPlayer: SpeechAudioPlaying {
     var onStop: (() -> Void)?
     var plays = 0
-    func playLoop(_ data: Data) throws { plays += 1 }
+    func playOnce(_ data: Data) throws { plays += 1 }
     func stop() {}
 }
 
