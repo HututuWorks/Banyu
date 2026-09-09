@@ -49,7 +49,7 @@ struct KeyboardTryoutView: View {
                 AboutDetailRow(symbol: "arrow.triangle.2.circlepath", title: "换成英文，再决定发送",
                                detail: "点「用英文」替换，点「撤销」恢复。继续编辑后，撤销会失效。")
                 AboutDetailRow(symbol: "speaker.wave.2", title: "听听这句英文",
-                               detail: "使用千问时，点小喇叭听一遍。展开学习还可轻点单词、长按选择短语朗读。首次播放会生成 AI 语音。")
+                               detail: "使用千问时，点小喇叭听一遍。展开后点单词，顶部显示本句词义并朗读；长按可选择短语。首次播放会生成 AI 语音。")
             }.padding(.horizontal, 4)
         }
         .scrollDismissesKeyboard(.interactively)

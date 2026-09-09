@@ -3,11 +3,12 @@ import UIKit
 /// One reading surface: actual English, selected usage, reusable expressions.
 /// Height, network requests and host edits remain owned by the controller.
 @MainActor
-final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate {
+final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
     static let learningBackground = AnalysisPalette.background
     static let learningText = AnalysisPalette.text
     var onRetry: (() -> Void)?
     var onRead: ((String) -> Void)?
+    var onLookupChanged: ((String?, String?) -> Void)?
     var onScrollChanged: ((Bool) -> Void)?
     var isScrolled: Bool { scroll.contentOffset.y > 2 }
     private let scroll = UIScrollView()
@@ -22,6 +23,13 @@ final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate {
     private var speechAvailable = false
     private var speechState: SpeechPlaybackSession.State = .idle
     private var speechText: String?
+    private var lookupRange: NSRange?
+    private var expressionLookup: (source: String, meaning: String)?
+    private var focusedCore = false
+    private var structureHeader: AnalysisStructureHeader?
+    private var returnOffset: CGFloat?
+    private let returnBar = UIView()
+    private let returnButton = UIButton(type: .system)
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -39,12 +47,32 @@ final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate {
         scroll.delegate = self
         addSubview(scroll)
         scroll.addSubview(content)
+        let blankTap = UITapGestureRecognizer(target: self, action: #selector(didTapBackground))
+        blankTap.delegate = self
+        blankTap.cancelsTouchesInView = false
+        scroll.addGestureRecognizer(blankTap)
+        returnBar.backgroundColor = AnalysisPalette.background
+        returnBar.isHidden = true
+        addSubview(returnBar)
+        let returnLabel = AnalysisLabel("对应原文", size: 12, lineHeight: 18, color: AnalysisPalette.secondary)
+        returnLabel.tag = 71
+        returnBar.addSubview(returnLabel)
+        returnButton.setTitle("回到讲解", for: .normal)
+        returnButton.setImage(UIImage(systemName: "arrow.uturn.backward", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12)), for: .normal)
+        returnButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .medium)
+        returnButton.tintColor = AnalysisPalette.blue
+        returnButton.accessibilityIdentifier = "keyboard.analysisReturnToExplanation"
+        returnButton.accessibilityLabel = "回到讲解，恢复刚才的阅读位置"
+        returnButton.addAction(UIAction { [weak self] _ in self?.returnToExplanation() }, for: .touchUpInside)
+        returnBar.addSubview(returnButton)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     /// Only explicit reopening resets reading; ordinary refreshes keep position.
     func beginPresentation() {
-        readingText?.clearSelection()
+        clearLookup()
+        returnOffset = nil
+        returnBar.isHidden = true
         scroll.setContentOffset(.zero, animated: false)
         pendingOffset = 0
         setNeedsLayout()
@@ -52,15 +80,25 @@ final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate {
     func endPresentation() {
         // Native selection belongs only to the visible learning surface. The
         // shared speech session can continue independently of this view.
-        readingText?.clearSelection()
+        clearLookup()
+        returnOffset = nil
+        returnBar.isHidden = true
+        setNeedsLayout()
     }
     func set(english: String, presentation: KeyboardSurface.AnalysisPresentation) {
         guard self.english != english || self.presentation != presentation else { return }
         let sameEnglish = self.english == english
         pendingOffset = sameEnglish ? scroll.contentOffset.y : 0
+        if !sameEnglish {
+            clearLookup()
+            focusedCore = false
+            returnOffset = nil
+            returnBar.isHidden = true
+        }
         self.english = english
         self.presentation = presentation
         rebuildContent(preservingReading: sameEnglish)
+        refreshLookup()
     }
     /// Playback only changes decoration. It must not replace the text view,
     /// native selection or the outer scroll view's reading position.
@@ -75,11 +113,10 @@ final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate {
     private func refreshSpeech() {
         readingText?.readingEnabled = speechAvailable
         readingHint?.available = speechAvailable
+        readingHint?.lookupAvailable = true
         readingHint?.hasSelection = readingText?.hasReadableSelection == true
-        if speechAvailable, let speechText, speechText != english,
-           speechState == .loading || speechState == .playing {
-            readingText?.highlight(source: speechText)
-        }
+        // Highlights follow explicit word/source actions, not delayed playback
+        // callbacks. Clearing a selection must stay cleared while audio finishes.
         for header in expressionHeaders {
             header.setSpeech(available: speechAvailable,
                              state: header.source == speechText ? speechState : .idle)
@@ -94,6 +131,8 @@ final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate {
             readingText?.onSelectionChanged = nil
             readingText?.readingEnabled = false
             readingText?.onRead = nil
+            readingText?.onWordTapped = nil
+            readingText?.onBlankTapped = nil
             readingText?.clearSelection()
             readingHint?.onReadSelection = nil
             readingHint?.onHeightChanged = nil
@@ -110,16 +149,42 @@ final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate {
         // contractions and order remain exactly as translated.
         if !english.isEmpty {
             let original = readingText ?? StudyReadingTextView(english, color: AnalysisPalette.text,
-                                                              highlightColor: AnalysisPalette.blue.withAlphaComponent(0.14))
+                                                              highlightColor: AnalysisPalette.selectionFill)
             original.accessibilityIdentifier = "keyboard.analysisOriginal"
             original.onRead = { [weak self] text in self?.read(text) }
+            original.onWordTapped = { [weak self] range in
+                guard let self, !self.isHidden else { return }
+                self.expressionLookup = nil
+                self.lookupRange = range
+                self.refreshLookup()
+            }
+            original.onBlankTapped = { [weak self] in self?.clearLookup() }
+            original.lookupEnabled = true
             readingText = original
-            append(original)
+            let ranges: [(range: NSRange, role: SentenceAnalysis.StructureSpan.Role)]
+            if case let .ready(analysis) = presentation { ranges = analysis.structureRanges(in: english) }
+            else { ranges = [] }
+            original.setStructure(ranges, focused: focusedCore)
+            let showsReadingHeader = SentenceAnalysis.tokens(in: english).count > 3
+            if showsReadingHeader {
+                let header = AnalysisStructureHeader()
+                header.configure(hasStructure: !ranges.isEmpty, canFocus: ranges.contains { $0.role == .core })
+                header.setFocused(focusedCore)
+                header.onToggle = { [weak self] in self?.toggleCore() }
+                structureHeader = header
+                append(header)
+            } else { structureHeader = nil }
+            append(original, top: showsReadingHeader ? 8 : 0)
             let hint = readingHint ?? AnalysisReadingHint()
             readingHint = hint
             original.onSelectionChanged = { [weak self, weak original] selected in
                 guard let self, let original, self.readingText === original else { return }
                 self.readingHint?.hasSelection = selected
+                if selected {
+                    self.lookupRange = nil
+                    self.expressionLookup = nil
+                    self.onLookupChanged?(nil, nil)
+                }
             }
             hint.onReadSelection = { [weak self] in
                 guard let self, self.speechAvailable, !self.isHidden else { return }
@@ -163,15 +228,17 @@ final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate {
         }
         appendReadingHint()
         if !analysis.insights.isEmpty {
-            let section = AnalysisReadingSection(title: analysis.kind == "word" ? "用法" : "理解这句",
+            let section = AnalysisReadingSection(title: analysis.kind == "word" ? "怎么用" : "这句怎么连起来",
                                                   identifier: "keyboard.analysisInsightHeading")
             for (index, insight) in analysis.insights.enumerated() {
                 let group = AnalysisVerticalGroup()
                 group.accessibilityIdentifier = "keyboard.analysisInsight.\(index)"
                 let title = AnalysisInsightButton(insight.title, explanation: insight.explanation, index: index)
                 title.accessibilityIdentifier = "keyboard.analysisInsightTitle.\(index)"
+                title.onShowSource = { [weak self] in self?.revealSource(insight.source) }
                 title.addAction(UIAction { [weak self] _ in
                     guard let self, !self.isHidden else { return }
+                    self.clearLookup()
                     self.readingText?.highlight(source: insight.source)
                 }, for: .touchUpInside)
                 group.append(title)
@@ -185,6 +252,9 @@ final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate {
             var visibleCount = 0
             for (index, expression) in analysis.expressions.enumerated() {
                 let group = AnalysisVerticalGroup()
+                group.backgroundColor = AnalysisPalette.greenFill
+                group.layer.cornerRadius = 14
+                group.contentInsets = UIEdgeInsets(top: 10, left: 14, bottom: 12, right: 10)
                 let repeatsOriginal = expression.text.caseInsensitiveCompare(
                     english.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
                 let repeatsMeaning = expression.meaning == analysis.overview
@@ -192,8 +262,11 @@ final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate {
                 if !repeatsOriginal {
                     let header = AnalysisExpressionHeader(expression: expression, index: index)
                     header.onRead = { [weak self] source in
-                        guard let self, self.speechAvailable, !self.isHidden else { return }
+                        guard let self, !self.isHidden else { return }
+                        self.lookupRange = nil
+                        self.expressionLookup = (source, expression.meaning)
                         self.readingText?.highlight(source: source)
+                        self.refreshLookup()
                         self.read(source)
                     }
                     expressionHeaders.append(header)
@@ -212,13 +285,78 @@ final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate {
                     group.append(note, top: repeatsOriginal && repeatsMeaning ? 0 : 3)
                 }
                 if !group.subviews.isEmpty {
-                    section.append(AnalysisRule(), top: visibleCount == 0 ? 10 : 12)
-                    section.append(group, top: 4)
+                    section.append(group, top: visibleCount == 0 ? 10 : 8)
                     visibleCount += 1
                 }
             }
             if visibleCount > 0 { append(section, top: 22) }
         }
+    }
+    private func toggleCore() {
+        guard case let .ready(analysis) = presentation,
+              analysis.structureRanges(in: english).contains(where: { $0.role == .core }) else { return }
+        focusedCore.toggle()
+        structureHeader?.setFocused(focusedCore)
+        readingText?.setStructure(analysis.structureRanges(in: english), focused: focusedCore)
+    }
+    private func refreshLookup() {
+        if let expressionLookup {
+            onLookupChanged?(expressionLookup.source, expressionLookup.meaning)
+            return
+        }
+        guard let range = lookupRange, range.location != NSNotFound,
+              NSMaxRange(range) <= (english as NSString).length else {
+            onLookupChanged?(nil, nil)
+            return
+        }
+        let word = (english as NSString).substring(with: range)
+        let meaning: String
+        switch presentation {
+        case .idle, .loading: meaning = "词义准备中"
+        case .failure: meaning = "词义暂不可用"
+        case let .ready(analysis): meaning = analysis.meaning(for: range, in: english) ?? "暂无本句词义"
+        }
+        onLookupChanged?(word, meaning)
+    }
+    private func clearLookup() {
+        lookupRange = nil
+        expressionLookup = nil
+        readingText?.clearSelection()
+        readingText?.clearHighlight()
+        onLookupChanged?(nil, nil)
+    }
+    @objc private func didTapBackground() { clearLookup() }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        var view = touch.view
+        while let current = view, current !== scroll {
+            if current is UIControl || current is UITextView { return false }
+            view = current.superview
+        }
+        return true
+    }
+    private func revealSource(_ source: String) {
+        guard !isHidden, let readingText, let swiftRange = english.range(of: source, options: .literal) else { return }
+        if returnOffset == nil { returnOffset = scroll.contentOffset.y }
+        clearLookup()
+        readingText.highlight(source: source)
+        returnBar.isHidden = false
+        pendingOffset = nil
+        setNeedsLayout()
+        layoutIfNeeded()
+        readingText.layoutManager.ensureLayout(for: readingText.textContainer)
+        let glyphs = readingText.layoutManager.glyphRange(forCharacterRange: NSRange(swiftRange, in: english), actualCharacterRange: nil)
+        let rect = readingText.layoutManager.boundingRect(forGlyphRange: glyphs, in: readingText.textContainer)
+        let maximum = max(0, scroll.contentSize.height - scroll.bounds.height)
+        scroll.setContentOffset(CGPoint(x: 0, y: min(maximum, max(0, readingText.frame.minY + rect.minY - 12))), animated: false)
+    }
+    private func returnToExplanation() {
+        guard let offset = returnOffset else { return }
+        returnOffset = nil
+        returnBar.isHidden = true
+        clearLookup()
+        pendingOffset = offset
+        setNeedsLayout()
+        layoutIfNeeded()
     }
     private func appendReadingHint() {
         if let readingHint { append(readingHint, top: 12) }
@@ -229,7 +367,11 @@ final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate {
     }
     override func layoutSubviews() {
         super.layoutSubviews()
-        scroll.frame = bounds
+        let navigationHeight: CGFloat = returnBar.isHidden ? 0 : 44
+        returnBar.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 44)
+        returnBar.viewWithTag(71)?.frame = CGRect(x: 14, y: 13, width: max(0, bounds.width - 150), height: 18)
+        returnButton.frame = CGRect(x: max(0, bounds.width - 126), y: 0, width: 112, height: 44)
+        scroll.frame = CGRect(x: 0, y: navigationHeight, width: bounds.width, height: max(0, bounds.height - navigationHeight))
         // Canvas is already inset 4 pt, making 18 pt page margins.
         let inset: CGFloat = bounds.width < 347 ? 10 : 14
         let width = max(1, bounds.width - inset * 2)
@@ -241,10 +383,10 @@ final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate {
             block.view.frame = CGRect(x: inset, y: y, width: width, height: height)
             y += height
         }
-        let contentHeight = max(bounds.height, y + 24)
+        let contentHeight = max(scroll.bounds.height, y + 24)
         content.frame = CGRect(x: 0, y: 0, width: bounds.width, height: contentHeight)
         scroll.contentSize = content.bounds.size
-        let maximumOffset = max(0, contentHeight - bounds.height)
+        let maximumOffset = max(0, contentHeight - scroll.bounds.height)
         if let target = pendingOffset {
             scroll.setContentOffset(CGPoint(x: 0, y: min(max(0, target), maximumOffset)), animated: false)
             pendingOffset = nil
@@ -261,30 +403,33 @@ final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate {
 @MainActor
 final class StudyReadingTextView: UITextView, UITextViewDelegate, UIGestureRecognizerDelegate {
     var onRead: ((String) -> Void)?
+    var onWordTapped: ((NSRange) -> Void)?
+    var onBlankTapped: (() -> Void)?
+    var lookupEnabled = false { didSet { updateInteraction() } }
     var onSelectionChanged: ((Bool) -> Void)?
     var hasReadableSelection: Bool { readingEnabled && selectedSource(in: selectedRange) != nil }
     var readingEnabled = false {
         didSet {
             guard readingEnabled != oldValue else { return }
-            isSelectable = readingEnabled
-            wordTap.isEnabled = readingEnabled
-            accessibilityHint = readingEnabled ? "轻点单词朗读一次；长按选择短语，然后选择朗读所选。" : nil
-            if !readingEnabled { clearSelection(); highlight(range: nil) }
+            updateInteraction()
+            if !readingEnabled { clearSelection(); if !lookupEnabled { highlight(range: nil) } }
             onSelectionChanged?(hasReadableSelection)
         }
     }
     private let wordTap = UITapGestureRecognizer()
     private let selectionColor: UIColor
+    private let originalColor: UIColor
+    private var structure: [(range: NSRange, role: SentenceAnalysis.StructureSpan.Role)] = []
+    private var focusedCore = false
     private let wordRanges: [NSRange]
     private(set) var highlightedRange: NSRange?
 
     init(_ english: String, color: UIColor, highlightColor: UIColor) {
         selectionColor = highlightColor
+        originalColor = color
         // English contractions and hyphenated compounds are one listening
         // unit; all ranges remain UTF-16, matching UIKit's TextKit coordinates.
-        let pattern = #"[\p{L}\p{M}\p{N}]+(?:['’\-‐‑][\p{L}\p{M}\p{N}]+)*"#
-        let expression = try? NSRegularExpression(pattern: pattern)
-        wordRanges = expression?.matches(in: english, range: NSRange(english.startIndex..., in: english)).map(\.range) ?? []
+        wordRanges = SentenceAnalysis.tokens(in: english).map(\.range)
         // Use TextKit 1 deliberately: the same layout manager is responsible
         // for natural wrapping, glyph hit testing and the rendered highlight.
         let container = NSTextContainer(size: .zero)
@@ -326,6 +471,14 @@ final class StudyReadingTextView: UITextView, UITextViewDelegate, UIGestureRecog
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    private func updateInteraction() {
+        isSelectable = readingEnabled
+        wordTap.isEnabled = readingEnabled || lookupEnabled
+        accessibilityHint = lookupEnabled
+            ? (readingEnabled ? "轻点单词，听发音并在顶部看本句词义；长按选择短语。" : "轻点单词，在顶部看本句词义。")
+            : (readingEnabled ? "轻点单词朗读一次；长按选择短语，然后选择朗读所选。" : nil)
+    }
+
     /// UITextView remains selectable but never becomes an editable input or
     /// requests a keyboard of its own when its selection handles are used.
     func textViewShouldBeginEditing(_ textView: UITextView) -> Bool { false }
@@ -352,12 +505,19 @@ final class StudyReadingTextView: UITextView, UITextViewDelegate, UIGestureRecog
     }
 
     func readWord(at point: CGPoint) {
-        guard readingEnabled, let range = readingRange(at: point) else { return }
+        guard readingEnabled || lookupEnabled else { return }
+        guard let range = readingRange(at: point) else {
+            clearSelection()
+            clearHighlight()
+            onBlankTapped?()
+            return
+        }
         // A tap on a word after a previous selection starts the new unit.
         selectedRange = NSRange(location: 0, length: 0)
         onSelectionChanged?(false)
         highlight(range: range)
-        onRead?((text as NSString).substring(with: range))
+        onWordTapped?(range)
+        if readingEnabled { onRead?((text as NSString).substring(with: range)) }
     }
 
     @objc private func didTapWord(_ gesture: UITapGestureRecognizer) {
@@ -411,24 +571,53 @@ final class StudyReadingTextView: UITextView, UITextViewDelegate, UIGestureRecog
         guard range.location != NSNotFound, range.length > 0 else { return }
         highlight(range: range)
     }
+    func clearHighlight() { highlight(range: nil) }
+
+    func setStructure(_ ranges: [(range: NSRange, role: SentenceAnalysis.StructureSpan.Role)], focused: Bool) {
+        structure = ranges.filter { $0.range.location != NSNotFound && $0.range.length > 0 && NSMaxRange($0.range) <= textStorage.length }
+        focusedCore = focused
+        applyDecoration()
+    }
     private func highlight(range: NSRange?) {
         guard range != highlightedRange else { return }
-        textStorage.beginEditing()
-        textStorage.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: textStorage.length))
-        if let range { textStorage.addAttribute(.backgroundColor, value: selectionColor, range: range) }
-        textStorage.endEditing()
         highlightedRange = range
+        applyDecoration()
+    }
+    private func applyDecoration() {
+        // Only paint attributes change. Font, paragraph style, source string,
+        // selection, line wrapping and character positions remain untouched.
+        let whole = NSRange(location: 0, length: textStorage.length)
+        guard whole.length > 0 else { return }
+        textStorage.beginEditing()
+        textStorage.removeAttribute(.backgroundColor, range: whole)
+        textStorage.addAttribute(.foregroundColor, value: originalColor, range: whole)
+        for span in structure {
+            switch span.role {
+            case .core:
+                textStorage.addAttribute(.foregroundColor, value: AnalysisPalette.blue, range: span.range)
+                if focusedCore { textStorage.addAttribute(.backgroundColor, value: AnalysisPalette.blueFill, range: span.range) }
+            case .supplement:
+                if focusedCore { textStorage.addAttribute(.foregroundColor, value: AnalysisPalette.secondary, range: span.range) }
+                else { textStorage.addAttribute(.backgroundColor, value: AnalysisPalette.sandFill, range: span.range) }
+            }
+        }
+        if let range = highlightedRange, NSMaxRange(range) <= textStorage.length {
+            textStorage.addAttribute(.backgroundColor, value: selectionColor, range: range)
+            textStorage.addAttribute(.foregroundColor, value: AnalysisPalette.selectionText, range: range)
+        }
+        textStorage.endEditing()
     }
 }
 
 @MainActor
 private final class AnalysisReadingHint: UIView {
     var available = false { didSet { updateVisibility() } }
+    var lookupAvailable = false { didSet { updateVisibility() } }
     var hasSelection = false { didSet { updateVisibility() } }
     var onReadSelection: (() -> Void)?
     var onHeightChanged: (() -> Void)?
     private var measuredHeight: CGFloat = 0
-    private let label = AnalysisLabel("轻点听单词 · 长按选择短语", size: 11, lineHeight: 18, color: AnalysisPalette.secondary)
+    private let label = AnalysisLabel("轻点听词、看词义 · 长按选择短语", size: 11, lineHeight: 18, color: AnalysisPalette.secondary)
     private let readSelection = UIButton(type: .system)
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -457,10 +646,11 @@ private final class AnalysisReadingHint: UIView {
     convenience init() { self.init(frame: .zero) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     private func updateVisibility() {
-        label.isHidden = !available || hasSelection
+        label.text = available ? "轻点听词、看词义 · 长按选择短语" : "轻点单词，看本句词义"
+        label.isHidden = (!available && !lookupAvailable) || hasSelection
         readSelection.isHidden = !available || !hasSelection
         readSelection.isEnabled = available && hasSelection
-        let height: CGFloat = available ? (hasSelection ? 44 : 18) : 0
+        let height: CGFloat = available && hasSelection ? 44 : (available || lookupAvailable ? 18 : 0)
         if height != measuredHeight {
             measuredHeight = height
             setNeedsLayout()
@@ -476,54 +666,120 @@ private final class AnalysisReadingHint: UIView {
 }
 
 @MainActor
-private final class AnalysisInsightButton: UIControl {
-    private let label: AnalysisLabel
-    private let explanation: AnalysisLabel
-    private let accent = UIView()
-    init(_ title: String, explanation: String, index: Int) {
-        label = AnalysisLabel(title, size: 15, lineHeight: 23, color: AnalysisPalette.text, weight: .medium)
-        self.explanation = AnalysisLabel(explanation, size: 14, lineHeight: 22, color: AnalysisPalette.secondary)
-        super.init(frame: .zero)
-        accent.backgroundColor = AnalysisPalette.blue
-        accent.layer.cornerRadius = 1
-        addSubview(accent)
-        addSubview(label)
-        self.explanation.accessibilityIdentifier = "keyboard.analysisInsightExplanation.\(index)"
-        addSubview(self.explanation)
-        isAccessibilityElement = true
-        accessibilityLabel = "\(title)。\(explanation)"
-        accessibilityHint = "在原句中突出对应片段"
-        accessibilityTraits = .button
+private final class AnalysisStructureHeader: UIView {
+    var onToggle: (() -> Void)?
+    private let title = AnalysisLabel("原句 · 结构", size: 12, lineHeight: 18, color: AnalysisPalette.secondary)
+    private let legend = AnalysisLabel("● 主干  ● 补充", size: 11, lineHeight: 18, color: AnalysisPalette.secondary)
+    private let focus = UIButton(type: .system)
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        addSubview(title)
+        addSubview(legend)
+        focus.titleLabel?.font = .systemFont(ofSize: 12)
+        focus.tintColor = AnalysisPalette.blue
+        focus.contentHorizontalAlignment = .trailing
+        focus.accessibilityIdentifier = "keyboard.analysisStructureFocus"
+        focus.addAction(UIAction { [weak self] _ in self?.onToggle?() }, for: .touchUpInside)
+        addSubview(focus)
+        let legendText = NSMutableAttributedString(attributedString: legend.attributedText!)
+        legendText.addAttribute(.foregroundColor, value: AnalysisPalette.blue, range: NSRange(location: 0, length: 4))
+        legendText.addAttribute(.foregroundColor, value: AnalysisPalette.sand, range: NSRange(location: 6, length: 4))
+        legend.attributedText = legendText
+        setFocused(false)
     }
+    convenience init() { self.init(frame: .zero) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func sizeThatFits(_ size: CGSize) -> CGSize {
-        let available = CGSize(width: max(1, size.width - 14), height: .greatestFiniteMagnitude)
-        let height = ceil(label.sizeThatFits(available).height) + 5 + ceil(explanation.sizeThatFits(available).height)
-        return CGSize(width: size.width, height: max(44, ceil(height)))
+    func configure(hasStructure: Bool, canFocus: Bool) {
+        focus.isHidden = !canFocus
+        focus.isEnabled = canFocus
+        legend.isHidden = !hasStructure
+        title.isHidden = hasStructure
     }
+    func setFocused(_ value: Bool) {
+        focus.setTitle(value ? "显示完整结构" : "点亮主干", for: .normal)
+        focus.accessibilityValue = value ? "已点亮主干" : "完整结构"
+        focus.accessibilityTraits = value ? [.button, .selected] : [.button]
+    }
+    override func sizeThatFits(_ size: CGSize) -> CGSize { CGSize(width: size.width, height: 44) }
     override func layoutSubviews() {
         super.layoutSubviews()
-        let width = max(1, bounds.width - 14)
-        let height = ceil(label.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
-        accent.frame = CGRect(x: 0, y: 0, width: 2, height: bounds.height)
-        label.frame = CGRect(x: 14, y: 0, width: width, height: height)
-        explanation.frame = CGRect(x: 14, y: height + 5, width: width, height: max(0, bounds.height - height - 5))
+        title.frame = CGRect(x: 0, y: 11, width: max(0, bounds.width - 110), height: 18)
+        focus.frame = CGRect(x: max(0, bounds.width - 110), y: 0, width: 110, height: 44)
+        legend.frame = CGRect(x: 0, y: 11, width: max(0, bounds.width - 110), height: 18)
     }
 }
 
 @MainActor
-private final class AnalysisExpressionHeader: UIView {
+private final class AnalysisInsightButton: UIControl {
+    var onShowSource: (() -> Void)?
+    private let label: AnalysisLabel
+    private let explanation: AnalysisLabel
+    private let accent = UIView()
+    private let sourceButton = UIButton(type: .system)
+    init(_ title: String, explanation: String, index: Int) {
+        label = AnalysisLabel(title, size: 15, lineHeight: 23, color: AnalysisPalette.text, weight: .medium)
+        self.explanation = AnalysisLabel(explanation, size: 14, lineHeight: 22, color: AnalysisPalette.secondary)
+        super.init(frame: .zero)
+        backgroundColor = AnalysisPalette.paper
+        layer.cornerRadius = 14
+        accent.backgroundColor = AnalysisPalette.blueFill
+        accent.layer.cornerRadius = 2
+        addSubview(accent)
+        addSubview(label)
+        self.explanation.accessibilityIdentifier = "keyboard.analysisInsightExplanation.\(index)"
+        addSubview(self.explanation)
+        sourceButton.setTitle("看原文", for: .normal)
+        sourceButton.titleLabel?.font = .systemFont(ofSize: 12)
+        sourceButton.tintColor = AnalysisPalette.blue
+        sourceButton.contentHorizontalAlignment = .trailing
+        sourceButton.accessibilityIdentifier = "keyboard.analysisSource.\(index)"
+        sourceButton.accessibilityLabel = "看原文，\(title)"
+        sourceButton.addAction(UIAction { [weak self] _ in self?.onShowSource?() }, for: .touchUpInside)
+        addSubview(sourceButton)
+        isAccessibilityElement = false
+        label.isAccessibilityElement = true
+        label.accessibilityHint = "\(explanation)"
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func sizeThatFits(_ size: CGSize) -> CGSize {
+        let width = max(1, size.width - 36)
+        let heading = max(44, ceil(label.sizeThatFits(CGSize(width: max(1, width - 64), height: .greatestFiniteMagnitude)).height))
+        let body = ceil(explanation.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
+        return CGSize(width: size.width, height: 10 + heading + body + 15)
+    }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let width = max(1, bounds.width - 36)
+        let titleHeight = ceil(label.sizeThatFits(CGSize(width: max(1, width - 64), height: .greatestFiniteMagnitude)).height)
+        let heading = max(44, titleHeight)
+        accent.frame = CGRect(x: 10, y: 17, width: 3, height: max(0, bounds.height - 34))
+        label.frame = CGRect(x: 22, y: 10 + (heading - titleHeight) / 2, width: max(1, width - 64), height: titleHeight)
+        sourceButton.frame = CGRect(x: bounds.width - 76, y: 10, width: 62, height: 44)
+        explanation.frame = CGRect(x: 22, y: 10 + heading, width: width, height: max(0, bounds.height - 25 - heading))
+    }
+}
+
+@MainActor
+private final class AnalysisExpressionHeader: UIControl {
     let source: String
     var onRead: ((String) -> Void)?
-    private let label: AnalysisLabel
+    private let label: AnalysisActionLabel
     private let speaker = UIButton(type: .system)
     private let spinner = UIActivityIndicatorView(style: .medium)
     init(expression: SentenceAnalysis.Expression, index: Int) {
         source = expression.source
-        label = AnalysisLabel(expression.text, size: 16, lineHeight: 24,
+        label = AnalysisActionLabel(expression.text, size: 16, lineHeight: 24,
                               color: AnalysisPalette.teal, weight: .medium)
         super.init(frame: .zero)
         label.accessibilityIdentifier = "keyboard.analysisExpressionText.\(index)"
+        label.onActivate = { [weak self] in
+            guard let self else { return }
+            self.onRead?(self.source)
+        }
+        label.isUserInteractionEnabled = true
+        label.accessibilityTraits = .button
+        label.accessibilityHint = "查看本句意思，并朗读原句中的表达。"
+        label.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapExpression)))
         speaker.accessibilityIdentifier = "keyboard.analysisExpressionSpeaker.\(index)"
         speaker.accessibilityHint = "读一遍自动停止，再点可停止当前朗读。"
         speaker.addAction(UIAction { [weak self] _ in
@@ -540,7 +796,9 @@ private final class AnalysisExpressionHeader: UIView {
         setSpeech(available: false, state: .idle)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    @objc private func tapExpression() { onRead?(source) }
     func setSpeech(available: Bool, state: SpeechPlaybackSession.State) {
+        label.accessibilityHint = available ? "查看本句意思，并朗读原句中的表达。" : "查看本句意思。"
         speaker.isHidden = !available
         speaker.isEnabled = available
         let loading = available && state == .loading
@@ -559,8 +817,7 @@ private final class AnalysisExpressionHeader: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         let width = max(1, bounds.width - (speaker.isHidden ? 0 : 48))
-        let height = ceil(label.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
-        label.frame = CGRect(x: 0, y: (bounds.height - height) / 2, width: width, height: height)
+        label.frame = CGRect(x: 0, y: 0, width: width, height: bounds.height)
         speaker.frame = speaker.isHidden ? .zero : CGRect(x: bounds.width - 44, y: 0, width: 44, height: 44)
         spinner.center = CGPoint(x: 22, y: 22)
     }
@@ -568,12 +825,18 @@ private final class AnalysisExpressionHeader: UIView {
 
 @MainActor
 private enum AnalysisPalette {
-    static let background = color(light: 0xF7F8FA, dark: 0x191C22)
+    static let background = color(light: 0xEEF3F6, dark: 0x19232B)
     static let text = color(light: 0x202631, dark: 0xEDF0F6)
     static let secondary = color(light: 0x626D7C, dark: 0xABB5C4)
-    static let rule = color(light: 0xE2E6ED, dark: 0x3A414D)
     static let blue = color(light: 0x3669AA, dark: 0x9EBEF0)
     static let teal = color(light: 0x26766D, dark: 0x8DC8BC)
+    static let paper = color(light: 0xF8FAFB, dark: 0x222E37)
+    static let blueFill = color(light: 0xDCE8F0, dark: 0x2B465B)
+    static let sandFill = color(light: 0xEAE3D7, dark: 0x403D36)
+    static let sand = color(light: 0x927A54, dark: 0xC7B493)
+    static let greenFill = color(light: 0xE5EFEB, dark: 0x223C37)
+    static let selectionFill = color(light: 0x456B86, dark: 0xB8D4E8)
+    static let selectionText = color(light: 0xF7FAFC, dark: 0x162B3B)
     private static func color(light: UInt32, dark: UInt32) -> UIColor {
         UIColor { traits in
             let value = traits.userInterfaceStyle == .dark ? dark : light
@@ -585,7 +848,7 @@ private enum AnalysisPalette {
 }
 
 @MainActor
-private final class AnalysisLabel: UILabel {
+private class AnalysisLabel: UILabel {
     init(_ text: String, size: CGFloat, lineHeight: CGFloat, color: UIColor = AnalysisPalette.text,
          weight: UIFont.Weight = .regular) {
         super.init(frame: .zero)
@@ -602,20 +865,32 @@ private final class AnalysisLabel: UILabel {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
+/// Explicit activation keeps VoiceOver and touch on the same source action.
+@MainActor
+private final class AnalysisActionLabel: AnalysisLabel {
+    var onActivate: (() -> Void)?
+    override func accessibilityActivate() -> Bool {
+        guard !isHidden, isUserInteractionEnabled, let onActivate else { return false }
+        onActivate()
+        return true
+    }
+}
+
 @MainActor
 private class AnalysisVerticalGroup: UIView {
     private var rows: [(view: UIView, top: CGFloat)] = []
+    var contentInsets: UIEdgeInsets = .zero
     func append(_ view: UIView, top: CGFloat = 0) { rows.append((view, top)); addSubview(view) }
     private func arrange(width: CGFloat, apply: Bool) -> CGFloat {
-        let innerWidth = max(1, width)
-        var y: CGFloat = 0
+        let innerWidth = max(1, width - contentInsets.left - contentInsets.right)
+        var y: CGFloat = contentInsets.top
         for row in rows {
             y += row.top
             let height = ceil(row.view.sizeThatFits(CGSize(width: innerWidth, height: .greatestFiniteMagnitude)).height)
-            if apply { row.view.frame = CGRect(x: 0, y: y, width: innerWidth, height: height) }
+            if apply { row.view.frame = CGRect(x: contentInsets.left, y: y, width: innerWidth, height: height) }
             y += height
         }
-        return y
+        return y + contentInsets.bottom
     }
     override func sizeThatFits(_ size: CGSize) -> CGSize { CGSize(width: size.width, height: arrange(width: size.width, apply: false)) }
     override func layoutSubviews() { super.layoutSubviews(); _ = arrange(width: bounds.width, apply: true) }
@@ -630,14 +905,6 @@ private final class AnalysisReadingSection: AnalysisVerticalGroup {
         append(heading)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-}
-
-@MainActor
-private final class AnalysisRule: UIView {
-    override init(frame: CGRect) { super.init(frame: frame); backgroundColor = AnalysisPalette.rule }
-    convenience init() { self.init(frame: .zero) }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func sizeThatFits(_ size: CGSize) -> CGSize { CGSize(width: size.width, height: 0.5) }
 }
 
 @MainActor

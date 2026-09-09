@@ -58,6 +58,7 @@ final class KeyboardSurface: UIView {
     private var hintAction: HintAction = .none
     private let analysisButton = UIButton(type: .system)
     private let speechButton = UIButton(type: .system)
+    private let sentenceSpeechLabel = UILabel()
     private let speechSpinner = UIActivityIndicatorView(style: .medium)
     private var speechAvailable = false
     private var speechIsLoading = false
@@ -67,6 +68,11 @@ final class KeyboardSurface: UIView {
     private var lastSpeechFailure: String?
     private var lastSpeechFailureText: String?
     private let analysisTitleLabel = UILabel()
+    private let analysisLookupWordLabel = UILabel()
+    private let analysisLookupMeaningLabel = UILabel()
+    private let analysisLookupMeaningScroll = UIScrollView()
+    private var lookupWord: String?
+    private var lookupMeaning: String?
     private let analysisPanel = SentenceAnalysisPanel()
     private let headerDivider = UIView()
     private var analysisAvailable = false
@@ -153,6 +159,13 @@ final class KeyboardSurface: UIView {
             guard let self else { return }
             self.headerDivider.isHidden = self.analysisPanel.isHidden || !scrolled
         }
+        analysisPanel.onLookupChanged = { [weak self] word, meaning in
+            guard let self else { return }
+            self.lookupWord = word
+            self.lookupMeaning = meaning
+            self.updateLookupPresentation()
+            self.setNeedsLayout()
+        }
         buildSpeechErrorToast()
         rebuildKeys()
     }
@@ -164,7 +177,7 @@ final class KeyboardSurface: UIView {
         mainStack.addArrangedSubview(header)
         [hintScroll, preeditLabel, candidateList, spellingList, emptyCandidatesLabel,
          spinner, retryButton, hintActionButton, speechButton, analysisButton, analysisTitleLabel,
-         headerDivider].forEach { header.addSubview($0) }
+         analysisLookupWordLabel, analysisLookupMeaningScroll, headerDivider].forEach { header.addSubview($0) }
         headerDivider.backgroundColor = .separator
         headerDivider.isUserInteractionEnabled = false
         headerDivider.isHidden = true
@@ -212,6 +225,14 @@ final class KeyboardSurface: UIView {
         }, for: .touchUpInside)
         speechButton.accessibilityIdentifier = "keyboard.speechToggle"
         speechButton.tintColor = hintActionColor
+        sentenceSpeechLabel.text = "整句"
+        sentenceSpeechLabel.font = .systemFont(ofSize: 11, weight: .regular)
+        sentenceSpeechLabel.textColor = hintActionColor
+        sentenceSpeechLabel.isUserInteractionEnabled = false
+        sentenceSpeechLabel.isAccessibilityElement = false
+        sentenceSpeechLabel.accessibilityIdentifier = "keyboard.speechScope"
+        sentenceSpeechLabel.isHidden = true
+        speechButton.addSubview(sentenceSpeechLabel)
         speechButton.addAction(UIAction { [weak self] _ in
             guard let self, !self.speechButton.isHidden else { return }
             self.dismissSpeechError()
@@ -237,6 +258,30 @@ final class KeyboardSurface: UIView {
         analysisTitleLabel.font = .systemFont(ofSize: 15, weight: .medium)
         analysisTitleLabel.textColor = SentenceAnalysisPanel.learningText
         analysisTitleLabel.accessibilityIdentifier = "keyboard.analysisTitle"
+        analysisLookupWordLabel.font = .systemFont(ofSize: 14, weight: .medium)
+        analysisLookupWordLabel.textColor = SentenceAnalysisPanel.learningText
+        // The full word remains in the original; a long title must never push
+        // the sentence/replacement controls outside their fixed touch bounds.
+        analysisLookupWordLabel.lineBreakMode = .byTruncatingTail
+        analysisLookupWordLabel.adjustsFontSizeToFitWidth = false
+        analysisLookupWordLabel.accessibilityIdentifier = "keyboard.analysisLookupWord"
+        analysisLookupMeaningLabel.font = .systemFont(ofSize: 12, weight: .regular)
+        analysisLookupMeaningLabel.textColor = hintActionColor
+        analysisLookupMeaningLabel.numberOfLines = 1
+        analysisLookupMeaningLabel.adjustsFontSizeToFitWidth = false
+        analysisLookupMeaningLabel.accessibilityIdentifier = "keyboard.analysisLookupMeaning"
+        analysisLookupMeaningScroll.addSubview(analysisLookupMeaningLabel)
+        analysisLookupMeaningScroll.showsVerticalScrollIndicator = false
+        analysisLookupMeaningScroll.showsHorizontalScrollIndicator = true
+        analysisLookupMeaningScroll.alwaysBounceHorizontal = false
+        analysisLookupMeaningScroll.contentInsetAdjustmentBehavior = .never
+        analysisLookupMeaningScroll.accessibilityIdentifier = "keyboard.analysisLookupMeaningScroll"
+        if #available(iOS 26.0, *) {
+            analysisLookupMeaningScroll.topEdgeEffect.isHidden = true
+            analysisLookupMeaningScroll.bottomEdgeEffect.isHidden = true
+            analysisLookupMeaningScroll.leftEdgeEffect.isHidden = true
+            analysisLookupMeaningScroll.rightEdgeEffect.isHidden = true
+        }
         preeditLabel.font = .systemFont(ofSize: 11)
         preeditLabel.textColor = .secondaryLabel
         preeditLabel.lineBreakMode = .byTruncatingHead
@@ -266,15 +311,26 @@ final class KeyboardSurface: UIView {
         }
         place(analysisButton, width: 44)
         place(hintActionButton, width: 56)
-        place(speechButton, width: 44)
+        place(speechButton, width: analysisPanel.isHidden ? 44 : 52)
         place(retryButton, width: 32)
         place(spinner, width: 24)
         // Adjacent full-sized targets leave the maximum width for English.
         // Only the boundary between reading and controls needs a visual gap.
         if trailing < headerWidth { trailing -= 4 }
-        speechSpinner.center = CGPoint(x: speechButton.bounds.midX, y: speechButton.bounds.midY)
+        speechSpinner.center = CGPoint(x: analysisPanel.isHidden ? speechButton.bounds.midX : 8,
+                                       y: speechButton.bounds.midY)
+        sentenceSpeechLabel.frame = CGRect(x: 27, y: 12, width: 24, height: 20)
         let contentWidth = max(0, trailing)
         analysisTitleLabel.frame = CGRect(x: 14, y: 0, width: max(0, contentWidth - 22), height: 44)
+        let lookupWidth = max(0, contentWidth - 22)
+        analysisLookupWordLabel.frame = CGRect(x: 14, y: 2, width: lookupWidth, height: 19)
+        analysisLookupMeaningScroll.frame = CGRect(x: 14, y: 23, width: lookupWidth, height: 18)
+        let meaningWidth = max(lookupWidth, ceil(analysisLookupMeaningLabel.sizeThatFits(
+            CGSize(width: CGFloat.greatestFiniteMagnitude, height: 18)).width))
+        analysisLookupMeaningLabel.frame = CGRect(x: 0, y: 0, width: meaningWidth, height: 16)
+        analysisLookupMeaningScroll.contentSize = CGSize(width: meaningWidth, height: 18)
+        analysisLookupMeaningScroll.isScrollEnabled = meaningWidth > lookupWidth
+        analysisLookupMeaningLabel.accessibilityHint = meaningWidth > lookupWidth ? "左右滑动可查看完整词义" : nil
         headerDivider.frame = CGRect(x: 14, y: 43.5, width: max(0, headerWidth - 28), height: 0.5)
         let hintLeading: CGFloat = hintIsTranslation ? 10 : 8
         // The control placement already reserves a 4 pt gap. Do not deduct a
@@ -475,6 +531,23 @@ final class KeyboardSurface: UIView {
         updateCompositionPresentation()
     }
 
+    private func updateLookupPresentation() {
+        let hasLookup = !analysisPanel.isHidden && lookupWord?.isEmpty == false
+        analysisTitleLabel.isHidden = analysisPanel.isHidden || hasLookup
+        analysisLookupWordLabel.isHidden = !hasLookup
+        analysisLookupMeaningScroll.isHidden = !hasLookup
+        analysisLookupMeaningLabel.isHidden = !hasLookup
+        let word = lookupWord ?? ""
+        let meaning = lookupMeaning ?? "词义准备中"
+        if analysisLookupWordLabel.text != word || analysisLookupMeaningLabel.text != meaning {
+            analysisLookupMeaningScroll.setContentOffset(.zero, animated: false)
+        }
+        analysisLookupWordLabel.text = word
+        analysisLookupWordLabel.accessibilityLabel = word
+        analysisLookupMeaningLabel.text = meaning
+        analysisLookupMeaningLabel.accessibilityLabel = "本句含义：\(meaning)"
+    }
+
     func configure(page: Page, shift: Shift, returnTitle: String, showGlobe: Bool, compact: Bool,
                    returnIsActive: Bool = true) {
         let structureChanged = self.page != page || self.showGlobe != showGlobe
@@ -538,7 +611,12 @@ final class KeyboardSurface: UIView {
         canvas.alpha = showsAnalysis ? 0 : 1
         canvas.isUserInteractionEnabled = !showsAnalysis
         canvas.accessibilityElementsHidden = showsAnalysis
-        analysisTitleLabel.isHidden = !showsAnalysis
+        updateLookupPresentation()
+        sentenceSpeechLabel.isHidden = !showsAnalysis
+        sentenceSpeechLabel.textColor = speechButton.tintColor
+        speechButton.contentHorizontalAlignment = showsAnalysis ? .left : .center
+        speechButton.setPreferredSymbolConfiguration(
+            UIImage.SymbolConfiguration(pointSize: showsAnalysis ? 13 : 15, weight: .regular), forImageIn: .normal)
         headerDivider.isHidden = !showsAnalysis || !analysisPanel.isScrolled
         preeditLabel.text = compositionText
         preeditLabel.isHidden = !showsComposition || compositionText.isEmpty

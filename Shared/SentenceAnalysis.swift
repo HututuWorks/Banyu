@@ -3,6 +3,24 @@ import Foundation
 /// The original English is rendered once by the reading surface. Learning notes
 /// reference exact source excerpts without rebuilding or fully parsing the text.
 struct SentenceAnalysis: Codable, Equatable, Sendable {
+    struct Token: Equatable, Sendable {
+        let index: Int
+        let text: String
+        let range: NSRange
+    }
+
+    struct WordMeaning: Codable, Equatable, Sendable {
+        let token: Int
+        let meaning: String
+    }
+
+    struct StructureSpan: Codable, Equatable, Sendable {
+        enum Role: String, Codable, Sendable { case core, supplement }
+        let start: Int
+        let end: Int
+        let role: Role
+    }
+
     struct Insight: Codable, Equatable, Sendable {
         let source: String
         let title: String
@@ -24,10 +42,88 @@ struct SentenceAnalysis: Codable, Equatable, Sendable {
     let overview: String?
     let insights: [Insight]
     let expressions: [Expression]
+    let wordMeanings: [WordMeaning]
+    let structure: [StructureSpan]
 
-    init(kind: String, overview: String? = nil, insights: [Insight], expressions: [Expression]) {
+    init(kind: String, overview: String? = nil, insights: [Insight], expressions: [Expression],
+         wordMeanings: [WordMeaning] = [], structure: [StructureSpan] = []) {
         self.kind = kind; self.overview = overview
         self.insights = insights; self.expressions = expressions
+        self.wordMeanings = wordMeanings; self.structure = structure
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind, overview, insights, expressions, wordMeanings, structure
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try container.decode(String.self, forKey: .kind)
+        overview = try container.decodeIfPresent(String.self, forKey: .overview)
+        insights = try container.decode([Insight].self, forKey: .insights)
+        expressions = try container.decode([Expression].self, forKey: .expressions)
+        // Older cached/custom responses remain readable. Optional annotation
+        // errors must not discard otherwise valid, source-checked learning notes.
+        wordMeanings = (try? container.decode(LossyArray<WordMeaning>.self, forKey: .wordMeanings))?.values ?? []
+        structure = (try? container.decode(LossyArray<StructureSpan>.self, forKey: .structure))?.values ?? []
+    }
+
+    private struct LossyArray<Element: Decodable>: Decodable {
+        let values: [Element]
+        init(from decoder: any Decoder) throws {
+            var container = try decoder.unkeyedContainer()
+            var values: [Element] = []
+            while !container.isAtEnd {
+                // superDecoder consumes one value even when decoding its shape fails.
+                let item = try container.superDecoder()
+                if let value = try? Element(from: item) { values.append(value) }
+            }
+            self.values = values
+        }
+    }
+
+    /// Match the reader's tap units, including contractions and hyphenated
+    /// compounds, without changing source whitespace or Unicode normalization.
+    static func tokens(in english: String) -> [Token] {
+        let pattern = #"[\p{L}\p{M}\p{N}]+(?:['’\-‐‑][\p{L}\p{M}\p{N}]+)*"#
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let source = english as NSString
+        return expression.matches(in: english, range: NSRange(location: 0, length: source.length))
+            .enumerated().map { index, match in
+                Token(index: index, text: source.substring(with: match.range), range: match.range)
+            }
+    }
+
+    /// Look up a specific occurrence, not its spelling: repeated words can have
+    /// different contextual meanings. Partial-word and arbitrary ranges fail closed.
+    func meaning(for range: NSRange, in english: String) -> String? {
+        guard let token = Self.tokens(in: english).first(where: { $0.range == range }) else { return nil }
+        return wordMeanings.first(where: {
+            $0.token == token.index && Self.validText($0.meaning, maximum: 48, requiresChinese: true)
+        })?.meaning
+    }
+
+    func structureRanges(in english: String) -> [(range: NSRange, role: StructureSpan.Role)] {
+        guard kind == "sentence" else { return [] }
+        let tokens = Self.tokens(in: english)
+        return Self.validStructure(structure, tokenCount: tokens.count).map { span in
+            let first = tokens[span.start].range
+            let last = tokens[span.end - 1].range
+            return (NSRange(location: first.location, length: NSMaxRange(last) - first.location), span.role)
+        }
+    }
+
+    private static func validStructure(_ spans: [StructureSpan], tokenCount: Int) -> [StructureSpan] {
+        // At most sixteen readable regions; ambiguous overlapping regions are
+        // discarded locally. Never use model-provided numbers as UTF-16 offsets.
+        var accepted: [StructureSpan] = []
+        for span in spans {
+            guard accepted.count < 16,
+                  span.start >= 0, span.end > span.start, span.end <= tokenCount,
+                  !accepted.contains(where: { span.start < $0.end && $0.start < span.end }) else { continue }
+            accepted.append(span)
+        }
+        return accepted.sorted { $0.start < $1.start }
     }
 
     /// Validation proves bounded shape and source provenance, not linguistic
@@ -68,7 +164,16 @@ struct SentenceAnalysis: Codable, Equatable, Sendable {
             if kind != "sentence", cleaned.meaning == overview, cleaned.usage == nil { continue }
             if !cleanedExpressions.contains(cleaned) { cleanedExpressions.append(cleaned) }
         }
-        return Self(kind: kind, overview: overview, insights: cleanedInsights, expressions: cleanedExpressions)
+        let tokens = Self.tokens(in: english)
+        var seenTokens = Set<Int>()
+        let cleanedMeanings = wordMeanings.filter {
+            $0.token >= 0 && $0.token < tokens.count
+                && Self.validText($0.meaning, maximum: 48, requiresChinese: true)
+                && seenTokens.insert($0.token).inserted
+        }.sorted { $0.token < $1.token }
+        return Self(kind: kind, overview: overview, insights: cleanedInsights, expressions: cleanedExpressions,
+                    wordMeanings: cleanedMeanings,
+                    structure: kind == "sentence" ? Self.validStructure(structure, tokenCount: tokens.count) : [])
     }
 
     private static func validSource(_ source: String, in english: String,

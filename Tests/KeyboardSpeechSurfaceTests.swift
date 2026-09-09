@@ -14,6 +14,10 @@ private enum SpeechSurfaceChecks {
     ], expressions: [
         .init(text: "set up", source: "set up", meaning: "建立、搭建"),
         .init(text: "make it up to someone", source: "make it up to you", meaning: "补偿某人", usage: "说出实际对象时，用 you、him 等替换 someone。")
+    ], wordMeanings: [.init(token: 4, meaning: "与 set 连用，表示搭建")], structure: [
+        .init(start: 0, end: 10, role: .core),
+        .init(start: 10, end: 16, role: .supplement),
+        .init(start: 16, end: 29, role: .core)
     ])
     static var directory: URL {
         URL(fileURLWithPath: ProcessInfo.processInfo.environment["EHK_SPEECH_UI_OUTPUT"]!)
@@ -64,6 +68,204 @@ private enum SpeechSurfaceChecks {
         return CGPoint(x: rect.midX, y: rect.midY)
     }
 
+    static func lineBreaks(in textView: UITextView) -> [NSRange] {
+        textView.layoutManager.ensureLayout(for: textView.textContainer)
+        var ranges: [NSRange] = []
+        textView.layoutManager.enumerateLineFragments(
+            forGlyphRange: NSRange(location: 0, length: textView.layoutManager.numberOfGlyphs)
+        ) { _, _, _, range, _ in ranges.append(range) }
+        return ranges
+    }
+
+    static func isVisible(_ view: UIView) -> Bool {
+        var ancestor: UIView? = view
+        while let current = ancestor {
+            if current.isHidden || current.alpha == 0 { return false }
+            ancestor = current.superview
+        }
+        return true
+    }
+
+    static func checkConnectedReading(root: UIView, surface: KeyboardSurface, prefix: String) throws {
+        let repeated = "I can book a room, and this book is useful."
+        let repeatedAnalysis = SentenceAnalysis(kind: "sentence", overview: "我可以预订房间，而且这本书很有用。", insights: [], expressions: [],
+            wordMeanings: [.init(token: 2, meaning: "预订"), .init(token: 7, meaning: "书")],
+            structure: [.init(start: 0, end: 5, role: .core), .init(start: 5, end: 10, role: .supplement)])
+        let studyScroll: UIScrollView = try descendant(surface, "keyboard.analysisScroll")
+        var spoken: [String] = []
+        var hostActions = 0
+        surface.onReadAnalysisText = { spoken.append($0) }
+        surface.onAction = { _ in hostActions += 1 }
+        surface.onUseEnglish = { hostActions += 1 }
+        surface.onUndoEnglish = { hostActions += 1 }
+        surface.setHint(text: repeated, loading: false, isTranslation: true, canRetry: false)
+        surface.setAnalysis(available: true, expanded: true, english: repeated, state: .ready(repeatedAnalysis))
+        surface.setSpeech(available: true, state: .idle, text: nil, english: repeated)
+        layout(root, surface)
+        let repeatedOriginal: StudyReadingTextView = try descendant(surface, "keyboard.analysisOriginal")
+        let lookupWord: UILabel = try descendant(surface, "keyboard.analysisLookupWord")
+        let lookupMeaning: UILabel = try descendant(surface, "keyboard.analysisLookupMeaning")
+        let lookupMeaningScroll: UIScrollView = try descendant(surface, "keyboard.analysisLookupMeaningScroll")
+        let header: UIView = try descendant(surface, "keyboard.header")
+        let sentenceSpeaker: UIButton = try descendant(surface, "keyboard.speechToggle")
+        let sentenceScope: UILabel = try descendant(surface, "keyboard.speechScope")
+        try expect(!sentenceScope.isHidden && sentenceScope.text == "整句",
+                   "\(prefix): a word lookup cannot make the header speaker's whole-sentence scope ambiguous")
+        if let icon = sentenceSpeaker.imageView {
+            try expect(icon.frame.maxX <= sentenceScope.frame.minX,
+                       "\(prefix): sentence speaker icon \(icon.frame) and scope text \(sentenceScope.frame) do not overlap")
+        }
+        let stableFrame = repeatedOriginal.frame
+        let stableSize = studyScroll.contentSize
+        let stableOffset = studyScroll.contentOffset
+        let books = SentenceAnalysis.tokens(in: repeated).filter { $0.text == "book" }
+        try expect(books.count == 2, "\(prefix): fixture contains two independent occurrences of book")
+        for (token, meaning) in zip(books, ["预订", "书"]) {
+            repeatedOriginal.readWord(at: try characterPoint(in: repeatedOriginal, at: token.range.location))
+            layout(root, surface)
+            try expect(!lookupWord.isHidden && lookupWord.text == "book" && lookupMeaning.text == meaning,
+                       "\(prefix): tapped occurrence selects its contextual meaning, not the first matching word")
+            try expect(repeatedOriginal.highlightedRange == token.range && spoken.last == "book",
+                       "\(prefix): word lookup highlights the exact occurrence and reads the actual original token")
+            try expect(repeatedOriginal.frame == stableFrame && studyScroll.contentSize == stableSize && studyScroll.contentOffset == stableOffset,
+                       "\(prefix): changing the fixed lookup header never moves or reflows reading content")
+            try expect(header.bounds.height == 44 && lookupWord.frame.maxX <= sentenceSpeaker.frame.minX &&
+                       lookupMeaningScroll.frame.maxX <= sentenceSpeaker.frame.minX && lookupWord.frame.maxY <= lookupMeaningScroll.frame.minY,
+                       "\(prefix): both lookup lines fit the existing header without overlapping sentence controls")
+        }
+        try render(surface, name: prefix + "-study-word-meaning")
+        repeatedOriginal.readWord(at: try characterPoint(in: repeatedOriginal, at: 1))
+        surface.setSpeech(available: true, state: .playing, text: "book", english: repeated)
+        layout(root, surface)
+        try expect(lookupWord.isHidden && lookupMeaning.isHidden && repeatedOriginal.highlightedRange == nil,
+                   "\(prefix): blank tap clears word lookup and late playback state cannot restore a discarded selection")
+        try expect(repeatedOriginal.attributedText.attribute(.backgroundColor, at: books[1].range.location, effectiveRange: nil) != nil,
+                   "\(prefix): clearing a transient selection preserves the underlying structural annotation")
+        surface.setSpeech(available: true, state: .idle, text: nil, english: repeated)
+
+        // Structure emphasis must change only presentation: preserve every
+        // actual TextKit line boundary, font and the reader's place.
+        let focus: UIButton = try descendant(surface, "keyboard.analysisStructureFocus")
+        let lineRanges = lineBreaks(in: repeatedOriginal)
+        let originalAttributes = repeatedOriginal.attributedText
+        for _ in 0 ..< 3 {
+            let previousStyle = NSAttributedString(attributedString: repeatedOriginal.attributedText)
+            focus.sendActions(for: .touchUpInside)
+            layout(root, surface)
+            try expect(!repeatedOriginal.attributedText.isEqual(to: previousStyle),
+                       "\(prefix): core emphasis visibly changes the source presentation")
+            try expect(lineBreaks(in: repeatedOriginal) == lineRanges && repeatedOriginal.frame == stableFrame &&
+                       studyScroll.contentSize == stableSize && studyScroll.contentOffset == stableOffset,
+                       "\(prefix): emphasis toggles preserve line breaks, content dimensions and reading offset")
+            for token in SentenceAnalysis.tokens(in: repeated) {
+                let before = originalAttributes?.attribute(.font, at: token.range.location, effectiveRange: nil) as? UIFont
+                let after = repeatedOriginal.attributedText.attribute(.font, at: token.range.location, effectiveRange: nil) as? UIFont
+                try expect(before == after && after?.pointSize == 18,
+                           "\(prefix): structure emphasis leaves token \(token.index)'s reading font unchanged")
+            }
+        }
+        try render(surface, name: prefix + "-study-core-emphasis")
+
+        // Reuse the same long original while analysis is pending. Lookup can
+        // acquire its meaning without rebuilding a text view or losing position.
+        let pendingEnglish = repeated + "\n\n" + Array(repeating: english, count: 3).joined(separator: "\n\n")
+        surface.setHint(text: pendingEnglish, loading: false, isTranslation: true, canRetry: false)
+        surface.setAnalysis(available: true, expanded: true, english: pendingEnglish, state: .loading)
+        surface.setSpeech(available: true, state: .idle, text: nil, english: pendingEnglish)
+        layout(root, surface)
+        let pendingOriginal: StudyReadingTextView = try descendant(surface, "keyboard.analysisOriginal")
+        pendingOriginal.readWord(at: try characterPoint(in: pendingOriginal, at: books[1].range.location))
+        studyScroll.setContentOffset(CGPoint(x: 0, y: 24), animated: false)
+        let pendingSpokenCount = spoken.count
+        surface.setAnalysis(available: true, expanded: true, english: pendingEnglish, state: .ready(repeatedAnalysis))
+        layout(root, surface)
+        let completedOriginal: StudyReadingTextView = try descendant(surface, "keyboard.analysisOriginal")
+        try expect(completedOriginal === pendingOriginal && lookupWord.text == "book" && lookupMeaning.text == "书",
+                   "\(prefix): late analysis fills the already-selected occurrence's meaning in place")
+        try expect(studyScroll.contentOffset.y == 24 && spoken.count == pendingSpokenCount && hostActions == 0,
+                   "\(prefix): arriving meanings cannot replay audio, move reading position or touch host input")
+        surface.setSpeech(available: true, state: .playing, text: "book", english: pendingEnglish)
+        layout(root, surface)
+        try expect(completedOriginal.highlightedRange == books[1].range && lookupMeaning.text == "书" && studyScroll.contentOffset.y == 24,
+                   "\(prefix): playback refresh preserves the second book's occurrence and contextual meaning")
+
+        // A new sentence removes former lookup context. A stale word view can
+        // neither overwrite the header nor dispatch a reading in the new one.
+        let greeting = SentenceAnalysis(kind: "word", overview: "你好。", insights: [], expressions: [],
+                                       wordMeanings: [.init(token: 0, meaning: "你好")])
+        surface.setHint(text: "Hello", loading: false, isTranslation: true, canRetry: false)
+        surface.setAnalysis(available: true, expanded: true, english: "Hello", state: .ready(greeting))
+        surface.setSpeech(available: true, state: .idle, text: nil, english: "Hello")
+        layout(root, surface)
+        let afterChangeCount = spoken.count
+        pendingOriginal.readWord(at: try characterPoint(in: pendingOriginal, at: books[1].range.location))
+        try expect(lookupWord.isHidden && lookupMeaning.isHidden && spoken.count == afterChangeCount,
+                   "\(prefix): discarded original cannot leak a former word or meaning into a new sentence")
+        let greetingOriginal: StudyReadingTextView = try descendant(surface, "keyboard.analysisOriginal")
+        try expect((try? descendant(surface, "keyboard.analysisStructureFocus", as: UIButton.self)) == nil,
+                   "\(prefix): a greeting without structure does not acquire a meaningless emphasis control")
+        surface.setSpeech(available: false, state: .idle, text: nil, english: "Hello")
+        greetingOriginal.readWord(at: try characterPoint(in: greetingOriginal, at: 0))
+        layout(root, surface)
+        try expect(lookupWord.text == "Hello" && lookupMeaning.text == "你好" && spoken.count == afterChangeCount,
+                   "\(prefix): contextual word lookup remains available when speech is unavailable")
+
+        let longMeaning = "资源密集型的；这里指运行平台需要较多计算能力、时间或资金。"
+        let compound = SentenceAnalysis(kind: "word", overview: "资源密集型的。", insights: [], expressions: [],
+                                       wordMeanings: [.init(token: 0, meaning: longMeaning)])
+        surface.setHint(text: "resource-intensive", loading: false, isTranslation: true, canRetry: false)
+        surface.setAnalysis(available: true, expanded: true, english: "resource-intensive", state: .ready(compound))
+        layout(root, surface)
+        let compoundOriginal: StudyReadingTextView = try descendant(surface, "keyboard.analysisOriginal")
+        compoundOriginal.readWord(at: try characterPoint(in: compoundOriginal, at: 0))
+        layout(root, surface)
+        try expect(lookupWord.text == "resource-intensive" && lookupMeaning.text == longMeaning &&
+                   lookupMeaningScroll.isScrollEnabled && lookupMeaningScroll.contentSize.width > lookupMeaningScroll.bounds.width,
+                   "\(prefix): a longer contextual meaning remains fully reachable in the fixed lookup viewport")
+        try expect(!lookupWord.adjustsFontSizeToFitWidth && !lookupMeaning.adjustsFontSizeToFitWidth && header.bounds.height == 44,
+                   "\(prefix): long lookup content cannot shrink its fonts or increase keyboard header height")
+        lookupMeaningScroll.setContentOffset(CGPoint(x: lookupMeaningScroll.contentSize.width - lookupMeaningScroll.bounds.width, y: 0), animated: false)
+        surface.setHint(text: "Hello", loading: false, isTranslation: true, canRetry: false)
+        surface.setAnalysis(available: true, expanded: true, english: "Hello", state: .ready(greeting))
+        layout(root, surface)
+        let restoredGreeting: StudyReadingTextView = try descendant(surface, "keyboard.analysisOriginal")
+        restoredGreeting.readWord(at: try characterPoint(in: restoredGreeting, at: 0))
+        layout(root, surface)
+        try expect(lookupMeaning.text == "你好" && lookupMeaningScroll.contentOffset == .zero,
+                   "\(prefix): selecting a new word resets only the lookup's own horizontal position")
+
+        // Native 26-key and nine-key canvases must both return after closing
+        // the study surface; lookup is local state, not a keyboard-mode change.
+        surface.setInputLanguage(isChinese: true)
+        for (mode, keyID) in [(KeyboardSurface.ChineseLayout.qwerty, "keyboard.key.q"), (.nineKey, "keyboard.t9.2")] {
+            surface.setChineseLayout(mode)
+            surface.frame.size.height = 260
+            surface.setAnalysis(available: true, expanded: false, english: "Hello", state: .ready(greeting))
+            layout(root, surface)
+            let key: UIButton = try descendant(surface, keyID)
+            let keyPoint = key.convert(CGPoint(x: key.bounds.midX, y: key.bounds.midY), to: surface)
+            let hit = surface.hitTest(keyPoint, with: nil)
+            try expect(key.bounds.width > 0 && key.bounds.height >= 40 &&
+                       (hit === key || hit?.isDescendant(of: key) == true),
+                       "\(prefix): closing study restores the \(keyID) touch surface")
+            surface.frame.size.height = 440
+            surface.setAnalysis(available: true, expanded: true, english: "Hello", state: .ready(greeting))
+            layout(root, surface)
+            try expect(lookupWord.isHidden && lookupMeaning.isHidden && studyScroll.contentOffset == .zero,
+                       "\(prefix): reopening study clears transient lookup and starts from the beginning")
+        }
+        surface.setChineseLayout(.qwerty)
+        surface.setInputLanguage(isChinese: false)
+        surface.setHint(text: english, loading: false, isTranslation: true, canRetry: false)
+        surface.setAnalysis(available: true, expanded: true, english: english, state: .ready(analysis))
+        surface.setSpeech(available: true, state: .idle, text: nil, english: english)
+        layout(root, surface)
+        surface.onReadAnalysisText = nil
+        surface.onAction = nil
+        surface.onUseEnglish = nil
+        surface.onUndoEnglish = nil
+    }
+
     static func checkStudyReading(root: UIView, surface: KeyboardSurface, prefix: String) throws {
         let original: StudyReadingTextView = try descendant(surface, "keyboard.analysisOriginal")
         let studyScroll: UIScrollView = try descendant(surface, "keyboard.analysisScroll")
@@ -86,6 +288,8 @@ private enum SpeechSurfaceChecks {
 
         surface.setSpeech(available: true, state: .idle, text: nil, english: english)
         layout(root, surface)
+        let lookupWord: UILabel = try descendant(surface, "keyboard.analysisLookupWord")
+        let lookupMeaning: UILabel = try descendant(surface, "keyboard.analysisLookupMeaning")
         try expect(original.text == english, "\(prefix): selectable original preserves every character")
         try expect(!original.isEditable && !original.isScrollEnabled && original.isSelectable,
                    "\(prefix): original is selectable, cannot edit, and shares the outer scroller")
@@ -130,6 +334,11 @@ private enum SpeechSurfaceChecks {
                 try expect(snippets.last == token, "\(prefix): point dispatches exact original token\(token)")
             }
         }
+        let contextualUp = SentenceAnalysis.tokens(in: english)[4]
+        original.readWord(at: try characterPoint(in: original, at: contextualUp.range.location))
+        layout(root, surface)
+        try expect(lookupWord.text == "up" && lookupMeaning.text == "与 set 连用，表示搭建" && snippets.last == "up",
+                   "\(prefix): a phrase-dependent word shows its contextual meaning while reading the exact tapped word")
         let gap = originalText.range(of: " like").location
         let gapPoint = try characterPoint(in: original, at: gap)
         let count = snippets.count
@@ -202,6 +411,10 @@ private enum SpeechSurfaceChecks {
 
         expressionSpeaker.sendActions(for: .touchUpInside)
         try expect(snippets.last == "make it up to you", "\(prefix): phrase speaker reads source, never template placeholders")
+        let beforeAccessibleExpression = snippets.count
+        try expect(expressionLabel.accessibilityActivate() && snippets.count == beforeAccessibleExpression + 1 &&
+                   snippets.last == "make it up to you" && lookupWord.text == "make it up to you" && lookupMeaning.text == "补偿某人",
+                   "\(prefix): accessible phrase title activates its actual source and current contextual meaning")
         studyScroll.setContentOffset(CGPoint(x: 0, y: 65), animated: false)
         let oldSize = studyScroll.contentSize
         for state in [SpeechPlaybackSession.State.loading, .playing, .idle] {
@@ -222,6 +435,25 @@ private enum SpeechSurfaceChecks {
                                max(0, speakerContentY - 180))
         studyScroll.setContentOffset(CGPoint(x: 0, y: phraseOffset), animated: false)
         try render(surface, name: prefix + "-study-expression")
+        let sourceButton: UIButton = try descendant(surface, "keyboard.analysisSource.0")
+        let returnButton: UIButton = try descendant(surface, "keyboard.analysisReturnToExplanation")
+        let explanationOffset = studyScroll.contentOffset
+        let explanationSize = studyScroll.contentSize
+        let beforeSourceCount = snippets.count
+        sourceButton.sendActions(for: .touchUpInside)
+        layout(root, surface)
+        try expect(isVisible(returnButton) && returnButton.bounds.height >= 44 &&
+                   original.highlightedRange == originalText.range(of: "I’d like to"),
+                   "\(prefix): explicit source action reveals its exact original excerpt and a usable return control")
+        let sourcePoint = try characterPoint(in: original, at: 0)
+        let sourceInScroll = original.convert(sourcePoint, to: studyScroll)
+        try expect(studyScroll.bounds.contains(sourceInScroll) && snippets.count == beforeSourceCount && hostActions == 0,
+                   "\(prefix): looking at source actually brings it into view without reading audio or changing host input")
+        try render(surface, name: prefix + "-study-source-focus")
+        returnButton.sendActions(for: .touchUpInside)
+        layout(root, surface)
+        try expect(!isVisible(returnButton) && studyScroll.contentOffset == explanationOffset && studyScroll.contentSize == explanationSize,
+                   "\(prefix): return to explanation restores the precise saved offset and full reading geometry")
         surface.setSpeech(available: false, state: .idle, text: nil, english: english)
         layout(root, surface)
         let unavailableCount = snippets.count
@@ -334,6 +566,11 @@ private enum SpeechSurfaceChecks {
     }
 
     static func run() async throws {
+        // Snapshot settled native states instead of UIKit's transient button
+        // title crossfades while this harness performs several immediate taps.
+        let wereAnimationsEnabled = UIView.areAnimationsEnabled
+        UIView.setAnimationsEnabled(false)
+        defer { UIView.setAnimationsEnabled(wereAnimationsEnabled) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         for width: CGFloat in [320, 393, 430] {
             for style in [UIUserInterfaceStyle.light, .dark] {
@@ -434,6 +671,7 @@ private enum SpeechSurfaceChecks {
                 studyScroll.setContentOffset(.zero, animated: false)
                 try render(surface, name: prefix + "-learning")
                 try checkStudyReading(root: root, surface: surface, prefix: prefix)
+                try checkConnectedReading(root: root, surface: surface, prefix: prefix)
 
                 let message = "暂时无法使用千问语音，请检查模型权限与账户余额。"
                 surface.setSpeech(available: true, state: .failed(message))

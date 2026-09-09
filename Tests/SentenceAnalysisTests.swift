@@ -30,10 +30,12 @@ struct SentenceAnalysisTests {
         try provenanceAndBoundsTests()
         try exactDeduplicationTests()
         try longReadingTests()
+        try contextualWordAndStructureTests()
+        try optionalAnnotationRecoveryTests()
         try await requestAndRoutingTests()
         try await failureTests()
         try await cancellationTests()
-        print("PASS: analysis — 8 groups, \(checkCount) checks; whole-text reading, optional insights, exact provenance and conservative deduplication; routing, bounded responses, sanitized failures and cancellation retained. Fixtures/stub transport only; no live API requests.")
+        print("PASS: analysis — 10 groups, \(checkCount) checks; contextual words, Unicode token structure and local annotation recovery; reading, exact provenance, routing, bounded responses and cancellation retained. Fixtures/stub transport only; no live API requests.")
     }
 
     static func expect(_ condition: Bool, _ message: String) throws {
@@ -77,7 +79,7 @@ struct SentenceAnalysisTests {
         let full = reading(overview: "说明未来的打算。", insights: sample.insights, expressions: sample.expressions)
         let encoded = try JSONEncoder().encode(full)
         let object = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
-        try expect(Set(object.keys) == ["kind", "overview", "insights", "expressions"], "Only new reading contract encoded")
+        try expect(Set(object.keys) == ["kind", "overview", "insights", "expressions", "wordMeanings", "structure"], "Reading contract encodes optional token annotations")
         let item = (object["insights"] as! [[String: Any]])[0]
         try expect(Set(item.keys) == ["source", "title", "explanation"], "Insight has no grammar parts or reconstruction fields")
         try expect(try JSONDecoder().decode(SentenceAnalysis.self, from: encoded) == full, "New contract Codable round-trip")
@@ -203,13 +205,108 @@ struct SentenceAnalysisTests {
         try reject(invalid, source: source)
     }
 
+    static func contextualWordAndStructureTests() throws {
+        let unicode = "👋 I’m re‑entering café,\nmañana at 10."
+        let unicodeTokens = SentenceAnalysis.tokens(in: unicode)
+        try expect(unicodeTokens.map(\.text) == ["I’m", "re‑entering", "café", "mañana", "at", "10"],
+                   "Contractions, hyphenated compounds, Unicode and punctuation use reader tap units")
+        try expect(unicodeTokens.map(\.index) == Array(0..<6), "Token indices start at zero without punctuation slots")
+        try expect(unicodeTokens[0].range.location == 3, "Emoji consumes two UTF-16 units, without shifting tapped token")
+        for token in unicodeTokens {
+            try expect((unicode as NSString).substring(with: token.range) == token.text,
+                       "Every token range maps back to exact source text")
+        }
+        let decomposed = "👩🏽‍💻 cafe\u{301} resource-intensive isn't empty."
+        let decomposedTokens = SentenceAnalysis.tokens(in: decomposed)
+        try expect(decomposedTokens.map(\.text) == ["cafe\u{301}", "resource-intensive", "isn't", "empty"],
+                   "Combining marks and compound words retain exact source spelling")
+
+        let repeated = "We lead a team past lead pipes."
+        let tokens = SentenceAnalysis.tokens(in: repeated)
+        let reading = SentenceAnalysis(kind: "sentence", insights: [], expressions: [], wordMeanings: [
+            .init(token: 1, meaning: "带领"), .init(token: 5, meaning: "铅制的")
+        ], structure: [.init(start: 0, end: 4, role: .core), .init(start: 4, end: 7, role: .supplement)])
+        let value = try reading.validated(for: repeated)
+        try expect(value == reading, "Valid token-indexed annotations round-trip unchanged")
+        try expect(value.meaning(for: tokens[1].range, in: repeated) == "带领", "First occurrence gets its contextual verb meaning")
+        try expect(value.meaning(for: tokens[5].range, in: repeated) == "铅制的", "Repeated spelling gets distinct contextual meaning")
+        for invalid in [NSRange(location: tokens[1].range.location, length: 2),
+                        NSRange(location: tokens[1].range.location, length: 0),
+                        NSRange(location: 0, length: (repeated as NSString).length),
+                        NSRange(location: NSNotFound, length: Int.max)] {
+            try expect(value.meaning(for: invalid, in: repeated) == nil, "Meaning requires one exact token range")
+        }
+        let ranges = value.structureRanges(in: repeated)
+        try expect(ranges.map { (repeated as NSString).substring(with: $0.range) } == ["We lead a team", "past lead pipes"],
+                   "Half-open token intervals render exact contiguous source, excluding trailing punctuation")
+        try expect(ranges.map(\.role) == [.core, .supplement], "Core and supplement preserve their semantic roles")
+        let unicodeAnalysis = SentenceAnalysis(kind: "sentence", insights: [], expressions: [],
+            wordMeanings: [.init(token: 0, meaning: "我是"), .init(token: 2, meaning: "咖啡馆")],
+            structure: [.init(start: 0, end: 2, role: .core), .init(start: 2, end: 4, role: .supplement)])
+        let unicodeValue = try unicodeAnalysis.validated(for: unicode)
+        try expect(unicodeValue.meaning(for: unicodeTokens[2].range, in: unicode) == "咖啡馆", "Unicode word lookup uses original UTF-16 coordinates")
+        let unicodeRanges = unicodeValue.structureRanges(in: unicode)
+        try expect((unicode as NSString).substring(with: unicodeRanges[1].range) == "café,\nmañana",
+                   "Structure span preserves original newlines and punctuation between tokens")
+        let roundTrip = try JSONDecoder().decode(SentenceAnalysis.self, from: JSONEncoder().encode(value))
+        try expect(roundTrip == value, "Token annotations have stable Codable round-trip")
+
+        let short = SentenceAnalysis(kind: "word", overview: "你好", insights: [], expressions: [],
+            wordMeanings: [.init(token: 0, meaning: "你好")], structure: [.init(start: 0, end: 1, role: .core)])
+        let greeting = try short.validated(for: "Hello")
+        try expect(greeting.structure.isEmpty && greeting.wordMeanings.count == 1,
+                   "Standalone words retain lookup without forced grammar colors")
+    }
+
+    static func optionalAnnotationRecoveryTests() throws {
+        let legacy = Data(#"{"kind":"sentence","overview":null,"insights":[],"expressions":[]}"#.utf8)
+        let legacyValue = try JSONDecoder().decode(SentenceAnalysis.self, from: legacy)
+        try expect(legacyValue.wordMeanings.isEmpty && legacyValue.structure.isEmpty, "Existing cached/custom JSON defaults new optional arrays to empty")
+        let malformed = Data(#"{"kind":"sentence","overview":"我明天打羽毛球。","insights":[],"expressions":[],"wordMeanings":[null,7,{"token":"zero","meaning":"错项"},{"token":0,"meaning":"我"},{"token":1,"meaning":3},{"token":4,"meaning":"明天"}],"structure":[{},false,{"start":0,"end":3,"role":"subject"},{"start":0,"end":3,"role":"core"},{"start":4,"end":5,"role":"supplement"}]}"#.utf8)
+        let recovered = try JSONDecoder().decode(SentenceAnalysis.self, from: malformed).validated(for: english)
+        try expect(recovered.overview == "我明天打羽毛球。" && recovered.wordMeanings.map(\.token) == [0, 4],
+                   "Malformed optional entries are individually discarded without losing the valid reading")
+        try expect(recovered.structure.count == 2, "Unknown roles and malformed structure items do not erase valid regions")
+        for fields in [#""wordMeanings":{},"structure":"wrong""#, #""wordMeanings":null,"structure":null"#] {
+            let data = Data("{\"kind\":\"sentence\",\"insights\":[],\"expressions\":[],\(fields)}".utf8)
+            let decoded = try JSONDecoder().decode(SentenceAnalysis.self, from: data).validated(for: english)
+            try expect(decoded == reading(), "Malformed optional fields degrade to an unannotated valid reading")
+        }
+        let source = "We set up a platform for research tomorrow."
+        let unchecked = SentenceAnalysis(kind: "sentence", insights: [], expressions: [], wordMeanings: [
+            .init(token: -1, meaning: "越界"), .init(token: Int.max, meaning: "越界"),
+            .init(token: 2, meaning: "English only"), .init(token: 2, meaning: "搭建（set up）"),
+            .init(token: 2, meaning: "向上"), .init(token: 3, meaning: String(repeating: "长", count: 49)),
+            .init(token: 4, meaning: "**平台**"), .init(token: 5, meaning: "含\u{202E}义"),
+            .init(token: 6, meaning: "研究"), .init(token: 7, meaning: "明天\n")
+        ], structure: [
+            .init(start: -1, end: 1, role: .core), .init(start: 0, end: Int.max, role: .supplement),
+            .init(start: 2, end: 2, role: .supplement), .init(start: 4, end: 1, role: .core),
+            .init(start: 0, end: 5, role: .core), .init(start: 2, end: 4, role: .supplement),
+            .init(start: 0, end: 5, role: .core), .init(start: 5, end: 8, role: .supplement)
+        ])
+        let cleaned = try unchecked.validated(for: source)
+        try expect(cleaned.wordMeanings == [.init(token: 2, meaning: "搭建（set up）"), .init(token: 6, meaning: "研究")],
+                   "Invalid Chinese, duplicates, long glosses and hostile controls are discarded locally")
+        try expect(cleaned.structure == [.init(start: 0, end: 5, role: .core), .init(start: 5, end: 8, role: .supplement)],
+                   "Invalid and overlapping half-open intervals are discarded while adjacent intervals survive")
+        try expect(unchecked.structureRanges(in: source).count == 2, "Rendering is range-safe even before optional data cleanup")
+        let many = SentenceAnalysis(kind: "sentence", insights: [], expressions: [],
+            structure: (0..<20).map { .init(start: $0, end: $0 + 1, role: .core) })
+        let manySource = Array(repeating: "word", count: 20).joined(separator: " ")
+        try expect(try many.validated(for: manySource).structure.count == 16, "Optional structure regions have a fixed display budget")
+        let badRequired = SentenceAnalysis(kind: "sentence", insights: [insight("not present")], expressions: [],
+            wordMeanings: [.init(token: 0, meaning: "我")])
+        try reject(badRequired, source: english)
+    }
+
     static func requestAndRoutingTests() async throws {
         let transport = StubAnalysisTransport(body: try envelope())
         let analyzer = SentenceAnalyzer(transport: transport)
         try expect(try await analyzer.analyze(english, settings: qwen) == sample, "Valid response decoded")
         let request = transport.requests[0]
         try expect(request.url == SentenceAnalyzer.qwenEndpoint, "Documented Qwen Beijing endpoint")
-        try expect(request.httpMethod == "POST" && request.timeoutInterval == 10, "Bounded nonstreaming request")
+        try expect(request.httpMethod == "POST" && request.timeoutInterval == 25, "Bounded nonstreaming request has room for prefetched glossary")
         try expect(request.cachePolicy == .reloadIgnoringLocalCacheData, "No request cache")
         try expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer \(syntheticKey)", "Only active configured key")
         let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
@@ -222,8 +319,8 @@ struct SentenceAnalysisTests {
         try expect(format["type"] as? String == "json_schema" && schema["strict"] as? Bool == true, "Strict Qwen output schema")
         let rootSchema = schema["schema"] as! [String: Any]
         let properties = rootSchema["properties"] as! [String: Any]
-        try expect(Set(properties.keys) == ["kind", "overview", "insights", "expressions"],
-                   "Qwen schema requests reading notes, never old full grammar reconstruction")
+        try expect(Set(properties.keys) == ["kind", "overview", "insights", "expressions", "wordMeanings", "structure"],
+                   "Qwen schema requests reading notes plus token-based glossary and structure")
         try expect(Set(rootSchema["required"] as! [String]) == Set(properties.keys), "Qwen nullable fields remain explicit")
         let insightSchema = (properties["insights"] as! [String: Any])["items"] as! [String: Any]
         try expect(Set((insightSchema["properties"] as! [String: Any]).keys) == ["source", "title", "explanation"],
@@ -231,7 +328,12 @@ struct SentenceAnalysisTests {
         let messages = body["messages"] as! [[String: String]]
         try expect(messages.count == 2 && messages[0]["role"] == "system" && messages[1]["role"] == "user", "Input never becomes system instructions")
         let data = Data(messages[1]["content"]!.utf8)
-        try expect((try JSONSerialization.jsonObject(with: data) as! [String: String])["english"] == english, "Exact input encoded as JSON data")
+        let input = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        try expect(input["english"] as? String == english, "Exact input encoded as JSON data")
+        let numbered = input["tokens"] as! [[String: Any]]
+        try expect(numbered.compactMap { $0["index"] as? Int } == [0, 1, 2, 3, 4]
+                   && numbered.compactMap { $0["text"] as? String } == ["I", "will", "play", "badminton", "tomorrow"],
+                   "Request provides authoritative token indices, without asking model for UTF-16 offsets")
         let custom = CustomTranslationConfiguration(baseURL: "https://analysis.example.invalid/v1/", model: "my-explicit-model", apiKey: "custom-test-only")
         let customSettings = TranslationSettingsSnapshot(provider: .custom, apiKey: syntheticKey, revision: "custom", custom: custom)
         _ = try await analyzer.analyze(english, settings: customSettings)
@@ -253,6 +355,12 @@ struct SentenceAnalysisTests {
         let injectionMessages = injectionBody["messages"] as! [[String: String]]
         try expect(injectionMessages[0] == messages[0], "Adversarial input cannot alter system role or instruction")
         try expect(injectionMessages[1]["content"]!.contains(injection), "Input stays plain data")
+        let long = Array(repeating: "word", count: 300).joined(separator: " ")
+        _ = try await analyzer.analyze(long, settings: qwen)
+        let longBody = try JSONSerialization.jsonObject(with: transport.requests.last!.httpBody!) as! [String: Any]
+        try expect(longBody["max_completion_tokens"] as? Int == 9_248, "Ordinary long input has space for one short contextual gloss per token")
+        try expect(SentenceAnalyzer.outputBudget(tokenCount: Int.max) == 16_384
+                   && SentenceAnalyzer.outputBudget(tokenCount: -1) == 4_096, "Output ceiling remains bounded for extreme counts")
     }
 
     static func failureTests() async throws {
@@ -263,7 +371,7 @@ struct SentenceAnalysisTests {
             try expect(!expected.message.contains("SENSITIVE"), "Server content absent from user error")
         }
         for body in [Data("not JSON".utf8), Data(#"{"choices":[]}"#.utf8), try envelope(finish: "length"),
-                     Data(repeating: 32, count: 65_537),
+                     Data(repeating: 32, count: 131_073),
                      Data(#"{"choices":[{"finish_reason":"stop","message":{"content":"```json\n{}\n```"}}]}"#.utf8)] {
             let transport = StubAnalysisTransport(body: body)
             try await expectError(.invalidResponse) { _ = try await SentenceAnalyzer(transport: transport).analyze(english, settings: qwen) }
@@ -289,7 +397,7 @@ struct SentenceAnalysisTests {
         struct SensitiveFailure: Error, LocalizedError { var errorDescription: String? { "SENSITIVE SERVER BODY" } }
         transport.handler = { throw SensitiveFailure() }
         try await expectError(.serviceUnavailable) { _ = try await analyzer.analyze(english, settings: qwen) }
-        try expect(URLSessionSentenceAnalysisTransport.maximumResponseBytes == 65_536, "Response budget distinct from translation")
+        try expect(URLSessionSentenceAnalysisTransport.maximumResponseBytes == 131_072, "Glossary response budget is bounded and distinct from translation")
     }
 
     static func cancellationTests() async throws {
