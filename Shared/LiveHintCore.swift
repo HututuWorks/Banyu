@@ -2,7 +2,7 @@ import Foundation
 import Combine
 
 enum LiveHintStatus: String, Equatable, Sendable {
-    case idle, waiting, translating, ready, needsLanguagePack, error
+    case idle, waiting, translating, ready, inputLimited, needsLanguagePack, error
 }
 
 struct LiveHintState: Equatable, Sendable {
@@ -39,73 +39,73 @@ protocol HintTranslating {
     func translate(_ source: String) async throws -> HintTranslationResult
 }
 
-/// Extracts only the sentence around the cursor from the context iOS supplies.
+/// Preserves the draft context iOS supplies, including paragraph boundaries.
 /// The proxy may truncate either side; this never implies access to the full document.
 enum HintContextExtractor {
     static let maximumCharacters = 400
 
-    static func extract(before: String?, after: String?, maximumLength: Int = maximumCharacters) -> String {
-        guard maximumLength > 0 else { return "" }
-        // Bound work even when a host supplies a very large text field.
-        let left = Array((before ?? "").suffix(maximumLength * 2))
-        let right = Array((after ?? "").prefix(maximumLength * 2))
-        let characters = left + right
-        guard !characters.isEmpty else { return "" }
-        let cursor = left.count
+    enum Result: Equatable, Sendable {
+        case empty
+        case text(String)
+        case inputLimited
 
-        // A completed sentence may end with quotes, brackets or emoji after its
-        // final punctuation. Keep that suffix with the sentence, but never cross
-        // a new line or another word while looking for its final punctuation.
-        var leftProbe = cursor
-        while leftProbe > 0 {
-            let character = characters[leftProbe - 1]
-            if isSentenceEnd(characters, at: leftProbe - 1) || character.isLetter || character.isNumber { break }
-            leftProbe -= 1
+        var source: String {
+            guard case let .text(source) = self else { return "" }
+            return source
         }
-        var end = cursor
-        if leftProbe > 0, isSentenceEnd(characters, at: leftProbe - 1), !isNewline(characters[leftProbe - 1]) {
-            while leftProbe > 0, isSentenceEnd(characters, at: leftProbe - 1), !isNewline(characters[leftProbe - 1]) {
-                leftProbe -= 1
-            }
+    }
+
+    /// Compatibility convenience for consumers that only need usable source text.
+    /// An overlong draft is deliberately never returned as a translated fragment.
+    static func extract(before: String?, after: String?, selectedText: String? = nil,
+                        maximumLength: Int = maximumCharacters) -> String {
+        extractResult(before: before, after: after, selectedText: selectedText,
+                      maximumLength: maximumLength).source
+    }
+
+    static func extractResult(before: String?, after: String?, selectedText: String? = nil,
+                              maximumLength: Int = maximumCharacters) -> Result {
+        guard maximumLength > 0 else { return .inputLimited }
+        // A proxy's before/after values omit the selected range. Treat an explicit
+        // selection as the requested scope instead of joining two disconnected ends.
+        let parts: [String]
+        if let selectedText, !selectedText.isEmpty {
+            parts = [selectedText]
         } else {
-            while end < characters.count {
-                let boundary = isSentenceEnd(characters, at: end)
-                end += 1
-                if boundary { break }
+            parts = [before ?? "", after ?? ""]
+        }
+
+        var source = ""
+        var pendingWhitespace = ""
+        var pendingCount = 0
+        var sourceCount = 0
+        let whitespace = CharacterSet.whitespacesAndNewlines
+        for part in parts {
+            for character in part {
+                if character.unicodeScalars.allSatisfy({ whitespace.contains($0) }) {
+                    guard !source.isEmpty else { continue }
+                    // Trailing whitespace is trimmed, even when unusually large.
+                    // Retain at most the budget plus one sentinel character until
+                    // another non-whitespace character makes it internal whitespace.
+                    if pendingCount <= maximumLength - sourceCount {
+                        pendingWhitespace.append(character)
+                        pendingCount += 1
+                    }
+                    continue
+                }
+                if sourceCount + pendingCount > maximumLength { return .inputLimited }
+                source.append(contentsOf: pendingWhitespace)
+                source.append(character)
+                pendingWhitespace.removeAll(keepingCapacity: true)
+                pendingCount = 0
+                // Count the joined string so a grapheme split at the cursor is
+                // treated the same as the original uninterrupted draft.
+                sourceCount = source.count
+                guard sourceCount <= maximumLength else { return .inputLimited }
             }
         }
-
-        var start = leftProbe
-        while start > 0 {
-            if isSentenceEnd(characters, at: start - 1) { break }
-            start -= 1
-        }
-        guard start < end else { return "" }
-
-        // Keep a cursor-centred window for unusually long sentences.
-        if end - start > maximumLength {
-            let leftBudget = maximumLength / 2
-            start = max(start, min(cursor - leftBudget, end - maximumLength))
-            end = min(end, start + maximumLength)
-        }
-        let result = String(characters[start..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard result.unicodeScalars.contains(where: { CharacterSet.letters.contains($0) }) else { return "" }
-        return result
-    }
-
-    private static func isNewline(_ character: Character) -> Bool {
-        character == "\n" || character == "\r" || character == "\r\n"
-    }
-
-    private static func isSentenceEnd(_ characters: [Character], at index: Int) -> Bool {
-        let character = characters[index]
-        if isNewline(character) { return true }
-        if "。！？!?".contains(character) { return true }
-        guard character == "." else { return false }
-        // Decimal points are not sentence boundaries.
-        if index > 0, index + 1 < characters.count,
-           characters[index - 1].isNumber, characters[index + 1].isNumber { return false }
-        return true
+        guard source.unicodeScalars.contains(where: { CharacterSet.letters.contains($0) }) else { return .empty }
+        return .text(source)
     }
 }
 
@@ -114,9 +114,11 @@ final class LiveHintModel: ObservableObject {
     @Published private(set) var state: LiveHintState = .idle
 
     private struct Input: Equatable {
-        let source: String
+        let extraction: HintContextExtractor.Result
         let documentID: UUID?
         let isComposing: Bool
+
+        var source: String { extraction.source }
     }
 
     private let translator: any HintTranslating
@@ -139,8 +141,10 @@ final class LiveHintModel: ObservableObject {
 
     deinit { task?.cancel() }
 
-    func update(before: String?, after: String?, documentID: UUID? = nil, isComposing: Bool = false) {
-        let input = Input(source: HintContextExtractor.extract(before: before, after: after),
+    func update(before: String?, after: String?, selectedText: String? = nil,
+                documentID: UUID? = nil, isComposing: Bool = false) {
+        let input = Input(extraction: HintContextExtractor.extractResult(before: before, after: after,
+                                                                         selectedText: selectedText),
                           documentID: documentID, isComposing: isComposing)
         guard input != lastInput else { return }
         lastInput = input
@@ -159,12 +163,12 @@ final class LiveHintModel: ObservableObject {
     func pauseForComposition() {
         guard lastInput?.isComposing != true else { return }
         invalidate()
-        lastInput = Input(source: "", documentID: nil, isComposing: true)
+        lastInput = Input(extraction: .empty, documentID: nil, isComposing: true)
         publish(LiveHintState(status: .waiting, source: "", displayText: "选定输入内容后显示英文"))
     }
 
     func retry() {
-        guard let lastInput else { return }
+        guard let lastInput, case .text = lastInput.extraction, !lastInput.isComposing else { return }
         schedule(lastInput)
     }
 
@@ -177,9 +181,23 @@ final class LiveHintModel: ObservableObject {
     private func schedule(_ input: Input) {
         invalidate()
         let token = revision
-        guard !input.source.isEmpty else { publish(.idle); return }
+        if input.isComposing {
+            publish(LiveHintState(status: .waiting, source: input.source, displayText: "选定输入内容后显示英文"))
+            return
+        }
+        switch input.extraction {
+        case .empty:
+            publish(.idle)
+            return
+        case .inputLimited:
+            publish(LiveHintState(status: .inputLimited, source: "",
+                                  displayText: "内容较长，请选中 400 字以内的内容翻译"))
+            return
+        case .text:
+            break
+        }
         publish(LiveHintState(status: .waiting, source: input.source,
-                              displayText: input.isComposing ? "选定输入内容后显示英文" : "稍停一下，显示英文提示"))
+                              displayText: "稍停一下，显示英文提示"))
         // Published subscribers run synchronously and may replace/reset input.
         guard revision == token, !input.isComposing else { return }
         let delay = debounceNanoseconds

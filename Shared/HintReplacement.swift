@@ -89,8 +89,8 @@ struct HintReplacementPlan: Sendable {
 }
 
 enum HintReplacementPlanner {
-    /// Reject the 400-character extraction boundary rather than guessing whether
-    /// it contains a whole sentence. This first version is deliberately limited
+    /// Keep edits below the 400-character observation budget. Translation may
+    /// contain multiple paragraphs, but edits remain deliberately limited
     /// to short, fully observed proxy contexts before AND after replacement.
     static let maximumCharacters = 400
 

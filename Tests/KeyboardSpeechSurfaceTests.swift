@@ -266,6 +266,120 @@ private enum SpeechSurfaceChecks {
         surface.onUndoEnglish = nil
     }
 
+    static func checkParagraphReading(root: UIView, surface: KeyboardSurface, prefix: String) throws {
+        let draft = "Hello.\n\nThis is Banyu, a keyboard that lets you learn English as you type. 😊\n\nYou can type in Chinese as usual. Banyu shows the English translation; tap a word or the speaker to hear its pronunciation."
+        let originalString = draft as NSString
+        let tokens = SentenceAnalysis.tokens(in: draft)
+        let lookupFixtures = [("Hello", "你好"), ("keyboard", "键盘"), ("pronunciation", "发音")]
+        let meanings = try lookupFixtures.map { word, meaning -> SentenceAnalysis.WordMeaning in
+            guard let token = tokens.first(where: { $0.text == word }) else {
+                throw SpeechSurfaceFailure(message: "Missing paragraph lookup fixture")
+            }
+            return .init(token: token.index, meaning: meaning)
+        }
+        let paragraphAnalysis = SentenceAnalysis(kind: "sentence", overview: "你好。这是伴语，可以边打字边学英语；输入中文就能查看英文表达，并轻点听发音。", insights: [
+            .init(source: "as you type", title: "一边打字，一边学习", explanation: "as you type 表示打字的同时，说明学习与输入一起进行。"),
+            .init(source: "to hear its pronunciation", title: "说明点击的目的", explanation: "to hear its pronunciation 表示为了听发音；its 指前面选中的单词或表达。")
+        ], expressions: [.init(text: "as usual", source: "as usual", meaning: "像平常一样")],
+           wordMeanings: meanings, structure: [.init(start: 0, end: 1, role: .core)])
+        var spoken: [String] = []
+        var hostActions = 0
+        surface.onReadAnalysisText = { spoken.append($0) }
+        surface.onAction = { _ in hostActions += 1 }
+        surface.onUseEnglish = { hostActions += 1 }
+        surface.onUndoEnglish = { hostActions += 1 }
+        surface.setHint(text: draft, loading: false, isTranslation: true, canRetry: false)
+        surface.setAnalysis(available: true, expanded: true, english: draft, state: .ready(paragraphAnalysis))
+        surface.setSpeech(available: true, state: .idle, text: nil, english: draft)
+        layout(root, surface)
+        let original: StudyReadingTextView = try descendant(surface, "keyboard.analysisOriginal")
+        let studyScroll: UIScrollView = try descendant(surface, "keyboard.analysisScroll")
+        let lookupWord: UILabel = try descendant(surface, "keyboard.analysisLookupWord")
+        let lookupMeaning: UILabel = try descendant(surface, "keyboard.analysisLookupMeaning")
+        try expect(original.text == draft && original.attributedText.string == draft,
+                   "\(prefix): all three paragraphs, punctuation, blank lines and emoji survive expanded reading unchanged")
+        try expect(original.textStorage.length == originalString.length && originalString.length > draft.count,
+                   "\(prefix): source coordinates use UTF16 even after a supplementary-plane emoji")
+        let firstLine = try characterPoint(in: original, at: 0)
+        let secondLine = try characterPoint(in: original, at: originalString.range(of: "This").location)
+        try expect(secondLine.y - firstLine.y >= 55,
+                   "\(prefix): an intentional empty line remains a visible paragraph gap")
+        for token in tokens {
+            let font = original.attributedText.attribute(.font, at: token.range.location, effectiveRange: nil) as? UIFont
+            let paragraph = original.attributedText.attribute(.paragraphStyle, at: token.range.location, effectiveRange: nil) as? NSParagraphStyle
+            try expect(font == UIFont.systemFont(ofSize: 18, weight: .regular) &&
+                       paragraph?.minimumLineHeight == 28 && paragraph?.maximumLineHeight == 28,
+                       "\(prefix): multi-paragraph token \(token.index) retains 18pt regular text and 28pt line rhythm")
+        }
+        try render(surface, name: prefix + "-study-paragraphs-top")
+        for (word, meaning) in lookupFixtures {
+            let range = originalString.range(of: word)
+            let point = try characterPoint(in: original, at: range.location)
+            let maximum = max(0, studyScroll.contentSize.height - studyScroll.bounds.height)
+            studyScroll.setContentOffset(CGPoint(x: 0, y: min(maximum, max(0, original.frame.minY + point.y - 80))), animated: false)
+            let offset = studyScroll.contentOffset
+            original.readWord(at: point)
+            layout(root, surface)
+            try expect(original.readingRange(at: point) == range && original.highlightedRange == range &&
+                       lookupWord.text == word && lookupMeaning.text == meaning && spoken.last == word,
+                       "\(prefix): exact word lookup and reading work in each paragraph, including after emoji")
+            try expect(studyScroll.contentOffset == offset && hostActions == 0,
+                       "\(prefix): paragraph lookup cannot reposition the reader or alter host text")
+        }
+        let breaks = lineBreaks(in: original)
+        let originalFrame = original.frame
+        let originalSize = studyScroll.contentSize
+        let focus: UIButton = try descendant(surface, "keyboard.analysisStructureFocus")
+        focus.sendActions(for: .touchUpInside)
+        layout(root, surface)
+        try expect(original.text == draft && lineBreaks(in: original) == breaks &&
+                   original.frame == originalFrame && studyScroll.contentSize == originalSize,
+                   "\(prefix): structure emphasis preserves paragraph boundaries and layout")
+
+        let acrossParagraphs = "as you type. 😊\n\nYou can"
+        original.selectedRange = originalString.range(of: acrossParagraphs)
+        original.readSelectedText()
+        layout(root, surface)
+        try expect(spoken.last == acrossParagraphs && original.highlightedRange == originalString.range(of: acrossParagraphs),
+                   "\(prefix): arbitrary selection preserves the exact text across paragraph and UTF16 boundaries")
+        original.clearSelection()
+        layout(root, surface)
+
+        studyScroll.setContentOffset(CGPoint(x: 0, y: max(0, studyScroll.contentSize.height - studyScroll.bounds.height)), animated: false)
+        let explanationOffset = studyScroll.contentOffset
+        let sourceButton: UIButton = try descendant(surface, "keyboard.analysisSource.1")
+        let returnButton: UIButton = try descendant(surface, "keyboard.analysisReturnToExplanation")
+        let spokenCount = spoken.count
+        sourceButton.sendActions(for: .touchUpInside)
+        layout(root, surface)
+        let sourceRange = originalString.range(of: "to hear its pronunciation")
+        let sourcePoint = try characterPoint(in: original, at: sourceRange.location)
+        try expect(original.highlightedRange == sourceRange &&
+                   studyScroll.bounds.contains(original.convert(sourcePoint, to: studyScroll)) && isVisible(returnButton),
+                   "\(prefix): explicit source lookup locates the final paragraph without earlier-paragraph offset drift")
+        try render(surface, name: prefix + "-study-paragraphs")
+        returnButton.sendActions(for: .touchUpInside)
+        layout(root, surface)
+        try expect(studyScroll.contentOffset == explanationOffset && spoken.count == spokenCount && hostActions == 0,
+                   "\(prefix): returning from final-paragraph source restores the exact explanation position without audio or edits")
+        surface.setAnalysis(available: true, expanded: false, english: draft, state: .ready(paragraphAnalysis))
+        surface.frame.size.height = 260
+        layout(root, surface)
+        surface.frame.size.height = 440
+        surface.setAnalysis(available: true, expanded: true, english: draft, state: .ready(paragraphAnalysis))
+        layout(root, surface)
+        try expect(studyScroll.contentOffset == .zero && original.text == draft && lineBreaks(in: original) == breaks,
+                   "\(prefix): reopening a multi-paragraph draft returns to its greeting with all paragraphs intact")
+        surface.setHint(text: english, loading: false, isTranslation: true, canRetry: false)
+        surface.setAnalysis(available: true, expanded: true, english: english, state: .ready(analysis))
+        surface.setSpeech(available: true, state: .idle, text: nil, english: english)
+        layout(root, surface)
+        surface.onReadAnalysisText = nil
+        surface.onAction = nil
+        surface.onUseEnglish = nil
+        surface.onUndoEnglish = nil
+    }
+
     static func checkStudyReading(root: UIView, surface: KeyboardSurface, prefix: String) throws {
         let original: StudyReadingTextView = try descendant(surface, "keyboard.analysisOriginal")
         let studyScroll: UIScrollView = try descendant(surface, "keyboard.analysisScroll")
@@ -672,6 +786,7 @@ private enum SpeechSurfaceChecks {
                 try render(surface, name: prefix + "-learning")
                 try checkStudyReading(root: root, surface: surface, prefix: prefix)
                 try checkConnectedReading(root: root, surface: surface, prefix: prefix)
+                try checkParagraphReading(root: root, surface: surface, prefix: prefix)
 
                 let message = "暂时无法使用千问语音，请检查模型权限与账户余额。"
                 surface.setSpeech(available: true, state: .failed(message))

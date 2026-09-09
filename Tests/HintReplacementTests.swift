@@ -83,6 +83,7 @@ struct HintReplacementTests {
         try snapshotAndStepTests()
         try undoTests()
         try await synchronousAndDelayedTests()
+        try await multilineDraftTests()
         try await interruptionTests()
         print("PASS: suffix replacement — mixed input, unchanged English, exact snapshots, graphemes, one-use undo, synchronous/delayed host acknowledgement, mutation, timeout and cancellation")
     }
@@ -234,6 +235,34 @@ struct HintReplacementTests {
         let nilResult = await nilHost.run(nilEdit)
         try expect(nilResult == .completed(nilEdit.expectedCompletedSnapshot), "Nil right context stays stable across operations")
         print("PASS: executor — immediate and delayed delete/insert acknowledgement, exact command counts and executable undo")
+    }
+
+    private static func multilineDraftTests() async throws {
+        let paragraphs = ["你好。", "这是伴语，一款可以边打字边学英语的键盘。",
+                          "你可以照常输入中文，伴语会显示对应的英文表达，轻点单词或小喇叭就能听发音。"]
+        let translated = "Hello.\n\nThis is Banyu, a keyboard that lets you learn English while typing.\n\nType in Chinese as usual to see English hints and tap a word or speaker to hear it."
+        for separator in ["\n\n", "\r\n\r\n"] {
+            let source = paragraphs.joined(separator: separator)
+            let original = " \t" + source
+            let edit = try require(plan(original, source: source, translated: translated), "A multiline draft must form one exact edit")
+            let host = ReplacementHost(edit.originalSnapshot)
+            let result = await host.run(edit)
+            try expect(result == .completed(edit.expectedCompletedSnapshot), "Replace all observed paragraphs together")
+            try expect(host.deleteCalls == source.count && host.insertions == [translated], "Each original paragraph is removed once, then the complete translation is inserted once")
+            try expect(host.state.before == " \t" + translated, "Leading whitespace stays outside the exact translated source")
+            var undo = HintReplacementUndo()
+            try expect(undo.record(edit, currentSnapshot: host.state), "Record the complete multiline replacement")
+            let inverse = try require(undo.takePlan(currentSnapshot: host.state), "Multiline undo must be available")
+            let restored = await host.run(inverse)
+            try expect(restored == .completed(edit.originalSnapshot), "Undo restores all paragraphs")
+            try expect((host.state.before ?? "").utf8.elementsEqual(original.utf8), "Undo preserves exact original line endings and whitespace")
+            try expect(plan(source + separator, source: source, translated: translated) == nil, "Do not guess replacement length after trimming trailing paragraph breaks")
+            try expect(plan(paragraphs[0], source: source, translated: translated, after: separator + paragraphs[1]) == nil,
+                       "A complete draft translation does not authorize replacement across a middle cursor")
+            try expect(plan(source, source: source, translated: translated, selected: source) == nil,
+                       "Translating a selected draft does not authorize suffix deletion over a selection")
+        }
+        print("PASS: multiline draft — all paragraphs in one edit, exact LF/CRLF undo, selection and middle-cursor guards")
     }
 
     private static func interruptionTests() async throws {

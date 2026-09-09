@@ -536,6 +536,7 @@ final class KeyboardViewController: UIInputViewController {
         // The host only exposes a bounded context. Never read or walk the whole document.
         hintModel.update(before: current.before,
                          after: current.after,
+                         selectedText: current.selectedText,
                          documentID: current.documentID,
                          isComposing: hasComposition)
         renderHint()

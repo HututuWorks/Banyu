@@ -49,13 +49,14 @@ struct QwenTranslatorTests {
 
     static func main() async throws {
         try await payloadTests()
+        try await multilinePayloadTests()
         try await failureTests()
         try await cancellationTests()
         try await routingTests()
         try await staleAndPermissionTests()
         try await customRevisionAndCancellationTests()
         try await noPaidRetryTests()
-        print("PASS: cloud translation — exact Qwen/custom payloads, secret-safe errors, bounded output, cancellation, explicit routing, fallback, permission/revision invalidation and no paid recovery loop; stub transport only, no live API requests")
+        print("PASS: cloud translation — exact Qwen/custom payloads, complete multiline drafts, preserved output paragraphs, secret-safe errors, bounded output, cancellation, explicit routing, fallback, permission/revision invalidation and no paid recovery loop; stub transport only, no live API requests")
     }
 
     private static func expect(_ condition: Bool, _ message: String) throws {
@@ -123,6 +124,51 @@ struct QwenTranslatorTests {
             }
             try expect(emptyTransport.requests.isEmpty, "Invalid endpoint never sends key")
         }
+    }
+
+    private static func multilinePayloadTests() async throws {
+        let source = "你好。\n\n这是伴语，一款可以边打字边学英语的键盘。\n\n你可以照常输入中文，伴语会显示对应的英文表达，轻点单词或小喇叭就能听发音。"
+        let english = "Hello.\n\nThis is Banyu, a keyboard that lets you learn English as you type.\n\nYou can type in Chinese as usual. Banyu shows the English translation; tap a word or the speaker to hear its pronunciation."
+        // Formatting from a service is useful, but it is not a proof of complete
+        // translation. Accept different natural paragraph choices without a
+        // paid retry or reconstructing English from source sentence counts.
+        for output in [english, english.replacingOccurrences(of: "\n\n", with: " ")] {
+            let body = try JSONSerialization.data(withJSONObject: ["choices": [
+                ["finish_reason": "stop", "message": ["content": " \n" + output + "\n "]]
+            ]])
+            for customProvider in [false, true] {
+                let transport = StubCloudTransport(body: String(decoding: body, as: UTF8.self))
+                let translator: any HintTranslating = customProvider
+                    ? OpenAICompatibleTranslator(configuration: custom, transport: transport)
+                    : QwenTranslator(apiKey: fixtureKey, transport: transport)
+                let result = try await translator.translate(source)
+                try expect(result.text == output, "Multiline response preserves every internal paragraph and only trims outer whitespace")
+                try expect(transport.requests.count == 1, "A complete draft uses one translation request, independent of its paragraphs")
+                let payload = try dictionary(transport.requests[0])
+                let messages = payload["messages"] as? [[String: String]] ?? []
+                try expect(messages.last == ["role": "user", "content": source], "Every source paragraph reaches the service unchanged and in order")
+                if customProvider {
+                    try expect(messages.count == 2 && messages[0]["role"] == "system", "Custom translation retains its instruction/data boundary")
+                    let instruction = messages[0]["content"] ?? ""
+                    try expect(instruction.contains("all paragraphs") && instruction.contains("paragraph breaks") && !instruction.contains(source),
+                               "Custom format instruction never interpolates private draft text")
+                    try expect(payload["translation_options"] == nil, "Custom service never receives Qwen-specific format options")
+                } else {
+                    let options = payload["translation_options"] as? [String: String] ?? [:]
+                    try expect(messages.count == 1, "Qwen-MT still receives one user message without an unsupported system role")
+                    try expect(Set(options.keys) == ["source_lang", "target_lang", "domains"] &&
+                               options["source_lang"] == "auto" && options["target_lang"] == "English", "Multiline uses documented Qwen translation options")
+                    let instruction = options["domains"] ?? ""
+                    try expect(instruction.contains("all paragraphs") && instruction.contains("paragraph breaks") && !instruction.contains(source),
+                               "Qwen domain hint requests full ordered content without embedding typed text")
+                }
+            }
+        }
+        let outerWhitespaceOnly = StubCloudTransport()
+        _ = try await QwenTranslator(apiKey: fixtureKey, transport: outerWhitespaceOnly).translate("\n你好。\n\n")
+        let body = try dictionary(outerWhitespaceOnly.requests[0])
+        let options = body["translation_options"] as? [String: String] ?? [:]
+        try expect(options["domains"] == nil, "Outer whitespace alone is not a multiline draft")
     }
 
     private static func failureTests() async throws {

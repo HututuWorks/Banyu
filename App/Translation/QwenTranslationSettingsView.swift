@@ -76,7 +76,7 @@ struct QwenTranslationSettingsView: View {
                     .listRowInsets(EdgeInsets())
                     .listRowBackground(Color.clear)
             } footer: {
-                Text("启用后，当前短句会发送给千问，按接口用量计费。网络暂时不可用时会尝试苹果翻译。")
+                Text("启用后，当前草稿或选中文字会发送给千问，按接口用量计费。网络暂时不可用时会尝试苹果翻译。")
             }
 
             Section {

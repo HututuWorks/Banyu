@@ -1468,7 +1468,7 @@
 				"COMPILATION_CACHE_ENABLE_CACHING" = "NO";
 				"SWIFT_EMIT_LOC_STRINGS" = "NO";
 				"CODE_SIGN_STYLE" = "Automatic";
-				"CURRENT_PROJECT_VERSION" = "33";
+				"CURRENT_PROJECT_VERSION" = "34";
 				"MARKETING_VERSION" = "0.1.0";
 				"CODE_SIGN_ENTITLEMENTS" = "Config/Translation.entitlements";
 				"DEBUG_INFORMATION_FORMAT" = "dwarf";
@@ -1500,7 +1500,7 @@
 				"COMPILATION_CACHE_ENABLE_CACHING" = "NO";
 				"SWIFT_EMIT_LOC_STRINGS" = "NO";
 				"CODE_SIGN_STYLE" = "Automatic";
-				"CURRENT_PROJECT_VERSION" = "33";
+				"CURRENT_PROJECT_VERSION" = "34";
 				"MARKETING_VERSION" = "0.1.0";
 				"CODE_SIGN_ENTITLEMENTS" = "Config/Translation.entitlements";
 				"DEBUG_INFORMATION_FORMAT" = "dwarf-with-dsym";

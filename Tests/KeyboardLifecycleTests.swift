@@ -17,6 +17,17 @@ private final class PendingTranslation: HintTranslating {
 private struct LifecycleFailure: Error { let message: String }
 
 @MainActor
+private final class LifecycleDraftTranslation: HintTranslating {
+    var requests: [String] = []
+    let translation: String
+    init(_ translation: String) { self.translation = translation }
+    func translate(_ source: String) async throws -> HintTranslationResult {
+        requests.append(source)
+        return HintTranslationResult(text: translation, sourceLanguageCode: "zh-Hans")
+    }
+}
+
+@MainActor
 private final class LifecycleSpeechPlayer: SpeechAudioPlaying {
     var onStop: (() -> Void)?
     var plays = 0
@@ -48,10 +59,12 @@ private final class LifecycleImmediateSpeech: SpeechSynthesizing {
 @MainActor
 private final class LifecycleDocumentProxy: NSObject, UITextDocumentProxy {
     var text = ""
+    var following: String?
+    var selection: String?
     let documentIdentifier = UUID()
     var documentContextBeforeInput: String? { text }
-    var documentContextAfterInput: String? { nil }
-    var selectedText: String? { nil }
+    var documentContextAfterInput: String? { following }
+    var selectedText: String? { selection }
     var documentInputMode: UITextInputMode? { nil }
     var hasText: Bool { !text.isEmpty }
     func insertText(_ value: String) { text += value }
@@ -165,10 +178,69 @@ extension KeyboardViewController {
         } else { throw LifecycleFailure(message: "test needs an eligible replacement") }
         controller.viewWillDisappear(false)
         try await verifySpeechLifecycle(expect: expect)
+        try await verifyDraftLifecycle(expect: expect)
         print("Keyboard controller: 2 notification paths and page/undo behavior, \(checks) checks passed")
     }
 
     @MainActor
+    private static func verifyDraftLifecycle(expect: (@autoclosure () -> Bool, String) throws -> Void) async throws {
+        let paragraphs = ["你好。", "这是伴语，一款可以边打字边学英语的键盘。",
+                          "你可以照常输入中文，伴语会显示对应的英文表达，轻点单词或小喇叭就能听发音。"]
+        let source = paragraphs.joined(separator: "\n\n")
+        let translated = "Hello.\n\nThis is Banyu, a keyboard for learning English while typing.\n\nType Chinese as usual and tap words to hear English."
+        let translator = LifecycleDraftTranslation(translated)
+        let controller = LifecycleTestController()
+        controller.hintModel = LiveHintModel(translator: translator, debounceNanoseconds: 0)
+        controller.proxy.text = source
+        controller.loadViewIfNeeded()
+        controller.viewWillAppear(false)
+        defer { controller.viewWillDisappear(false) }
+        func waitForReady() async throws {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while controller.displayedHint.status != .ready {
+                guard ContinuousClock.now < deadline else { throw LifecycleFailure(message: "multiline controller result timed out") }
+                try await Task.sleep(for: .milliseconds(1))
+            }
+        }
+        controller.updateHint()
+        try await waitForReady()
+        try expect(translator.requests == [source], "Controller sends all three paragraphs in one translation request")
+        try expect(controller.displayedHint.source == source && controller.availableAnalysisText() == translated,
+                   "Study receives the whole translated draft, preserving paragraph breaks")
+        try expect(controller.availableReplacement()?.suffixToDelete == source,
+                   "Use English targets the same complete draft as translation and study")
+        try expect(controller.proxy.text == source, "Translation and preparation do not edit or send the host draft")
+
+        controller.proxy.text = paragraphs[0]
+        controller.proxy.following = "\n\n" + paragraphs.dropFirst().joined(separator: "\n\n")
+        controller.updateHint()
+        try await waitForReady()
+        try expect(translator.requests.last == source, "A cursor moved between paragraphs still supplies the same draft")
+        try expect(controller.availableReplacement() == nil, "No suffix replacement from the middle of a draft")
+
+        controller.proxy.text = paragraphs[0] + "\n\n"
+        controller.proxy.selection = paragraphs[1]
+        controller.proxy.following = "\n\n" + paragraphs[2]
+        controller.updateHint()
+        try await waitForReady()
+        try expect(translator.requests.last == paragraphs[1] && controller.displayedHint.source == paragraphs[1],
+                   "A selected paragraph is sent alone, never omitted by joining its surroundings")
+        try expect(controller.availableReplacement() == nil, "Selected text can be studied without authorizing suffix replacement")
+
+        controller.proxy.selection = nil
+        controller.proxy.following = nil
+        controller.proxy.text = String(repeating: "文", count: 401)
+        let calls = translator.requests.count
+        controller.updateHint()
+        try expect(controller.displayedHint.status == .inputLimited && translator.requests.count == calls,
+                   "Oversized input is explained without a partial paid request")
+        try expect(controller.availableAnalysisText() == nil && controller.availableReplacement() == nil,
+                   "An oversized draft cannot retain previous learning or replacement actions")
+        controller.proxy.text = ""
+        controller.updateHint()
+        try expect(controller.displayedHint == .idle, "Clearing the field clears the entire draft result")
+    }
+
     private static func verifySpeechLifecycle(expect: (@autoclosure () -> Bool, String) throws -> Void) async throws {
         let controller = LifecycleTestController()
         let player = LifecycleSpeechPlayer()

@@ -104,16 +104,29 @@ final class QwenTranslator: HintTranslating {
         var request = try CloudTranslationRequest.make(endpoint: Self.endpoint, apiKey: apiKey, source: source)
         request.httpBody = try JSONEncoder().encode(RequestBody(
             model: Self.model, messages: [.init(role: "user", content: source)],
-            translation_options: .init(source_lang: "auto", target_lang: "English")))
+            translation_options: .init(source_lang: "auto", target_lang: "English",
+                domains: source.trimmingCharacters(in: .whitespacesAndNewlines).contains(where: \.isNewline)
+                    ? Self.multilineTranslationDomain : nil)))
         return try await CloudTranslationRequest.perform(request, source: source, transport: transport)
     }
+
+    // Qwen-MT accepts one user message, not a system instruction. Its documented
+    // domain prompt can describe the message's format without altering source
+    // text or splitting paragraphs into additional translation requests.
+    private static let multilineTranslationDomain = """
+    This is a complete chat message with multiple paragraphs. Translate all paragraphs in their original order into natural conversational English. Preserve paragraph breaks where possible, including short greetings and introductory paragraphs.
+    """
 
     private struct RequestBody: Encodable {
         let model: String
         let messages: [Message]
         let translation_options: TranslationOptions
         struct Message: Encodable { let role: String; let content: String }
-        struct TranslationOptions: Encodable { let source_lang: String; let target_lang: String }
+        struct TranslationOptions: Encodable {
+            let source_lang: String
+            let target_lang: String
+            let domains: String?
+        }
     }
 }
 

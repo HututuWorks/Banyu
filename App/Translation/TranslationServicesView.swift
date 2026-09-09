@@ -82,7 +82,7 @@ struct TranslationServicesView: View {
                 NavigationLink { AppleLanguagePacksView() } label: {
                     AppNavigationRow(title: "苹果语言包", symbol: "arrow.down.circle", detail: "下载后可离线翻译")
                 }.appSurface().buttonStyle(AppPressStyle())
-                Text("勾选表示当前选择。云端服务需先配置，启用后会接收当前短句及对应英文的学习分析请求。")
+                Text("勾选表示当前选择。云端服务需先配置，启用后会接收当前草稿或选中文字，以及对应英文的学习分析请求。")
                     .font(.footnote).foregroundStyle(.secondary).lineSpacing(3)
                     .padding(.horizontal, 4)
             }
