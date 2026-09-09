@@ -9,7 +9,7 @@ import subprocess
 import xml.etree.ElementTree as ET
 
 APP_DISPLAY_NAME = '伴语'
-BUILD_VERSION = '34'
+BUILD_VERSION = '35'
 MARKETING_VERSION = '0.1.0'
 APP_TARGET_NAME = 'EnglishHintKeyboard'
 APP_BUNDLE_IDENTIFIER = 'com.tutuhu.EnglishHintKeyboard'
@@ -179,6 +179,10 @@ def generate(root):
         'UISupportedInterfaceOrientations': ['UIInterfaceOrientationPortrait',
                                             'UIInterfaceOrientationLandscapeLeft',
                                             'UIInterfaceOrientationLandscapeRight'],
+        'UISupportedInterfaceOrientations~ipad': ['UIInterfaceOrientationPortrait',
+                                                  'UIInterfaceOrientationPortraitUpsideDown',
+                                                  'UIInterfaceOrientationLandscapeLeft',
+                                                  'UIInterfaceOrientationLandscapeRight'],
         'UIApplicationSceneManifest': {'UIApplicationSupportsMultipleScenes': False},
     })
     info_files = {'App-Info.plist': app_info}
@@ -254,7 +258,7 @@ def generate(root):
         'CLANG_CXX_LANGUAGE_STANDARD': 'c++17', 'CLANG_CXX_LIBRARY': 'libc++',
         'GCC_C_LANGUAGE_STANDARD': 'gnu17', 'GCC_WARN_ABOUT_RETURN_TYPE': 'YES_ERROR',
         'IPHONEOS_DEPLOYMENT_TARGET': '26.0', 'SDKROOT': 'iphoneos', 'SWIFT_VERSION': '6.0',
-        'TARGETED_DEVICE_FAMILY': '1', 'SUPPORTED_PLATFORMS': 'iphoneos iphonesimulator',
+        'TARGETED_DEVICE_FAMILY': '1,2', 'SUPPORTED_PLATFORMS': 'iphoneos iphonesimulator',
         'ENABLE_USER_SCRIPT_SANDBOXING': 'YES', 'COMPILATION_CACHE_ENABLE_CACHING': 'NO',
         'SWIFT_EMIT_LOC_STRINGS': 'NO', 'CODE_SIGN_STYLE': 'Automatic',
         'CURRENT_PROJECT_VERSION': BUILD_VERSION, 'MARKETING_VERSION': MARKETING_VERSION,

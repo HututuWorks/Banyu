@@ -179,7 +179,33 @@ extension KeyboardViewController {
         controller.viewWillDisappear(false)
         try await verifySpeechLifecycle(expect: expect)
         try await verifyDraftLifecycle(expect: expect)
+        try verifyTabletGeometry(expect: expect)
         print("Keyboard controller: 2 notification paths and page/undo behavior, \(checks) checks passed")
+    }
+
+    @MainActor
+    private static func verifyTabletGeometry(expect: (@autoclosure () -> Bool, String) throws -> Void) throws {
+        let controller = LifecycleTestController()
+        controller.traitOverrides.userInterfaceIdiom = .pad
+        controller.loadViewIfNeeded()
+        controller.view.frame = CGRect(x: 0, y: 0, width: 810, height: 314)
+        controller.updateHeight(for: 810)
+        try expect(controller.layoutViewport(for: 810).isPad && !controller.layoutViewport(for: 810).compactKeys,
+                   "Controller uses tablet traits instead of classifying 810pt width as phone landscape")
+        try expect(controller.keyboardHeight?.constant == 314, "iPad controller requests full-size keyboard content")
+        for _ in 0..<3 {
+            controller.analysisExpanded = true
+            controller.updateHeight(for: 810)
+            try expect(controller.keyboardHeight?.constant == 540, "Detached tablet fallback requests half its 1080pt display")
+            controller.analysisExpanded = false
+            controller.updateHeight(for: 810)
+            try expect(controller.keyboardHeight?.constant == 314, "Reopening does not accumulate tablet height")
+        }
+        controller.updateHeight(for: 320)
+        try expect(controller.keyboardHeight?.constant == 263, "Narrow tablet window restores compact-width portrait key height")
+        controller.traitOverrides.userInterfaceIdiom = .phone
+        controller.updateHeight(for: 852)
+        try expect(controller.keyboardHeight?.constant == 214, "iPhone landscape key height is unchanged")
     }
 
     @MainActor

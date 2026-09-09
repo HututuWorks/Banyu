@@ -367,14 +367,17 @@ final class SentenceAnalysisPanel: UIView, UIScrollViewDelegate, UIGestureRecogn
     }
     override func layoutSubviews() {
         super.layoutSubviews()
+        // Keep one readable column on a full-width iPad without changing the
+        // established type or compact keyboard margins. All reading blocks
+        // share this width so explanations remain aligned with their source.
+        let minimumInset: CGFloat = bounds.width < 347 ? 10 : 14
+        let width = min(680, max(1, bounds.width - minimumInset * 2))
+        let inset = max(minimumInset, (bounds.width - width) / 2)
         let navigationHeight: CGFloat = returnBar.isHidden ? 0 : 44
         returnBar.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 44)
-        returnBar.viewWithTag(71)?.frame = CGRect(x: 14, y: 13, width: max(0, bounds.width - 150), height: 18)
-        returnButton.frame = CGRect(x: max(0, bounds.width - 126), y: 0, width: 112, height: 44)
+        returnBar.viewWithTag(71)?.frame = CGRect(x: inset, y: 13, width: max(0, width - 122), height: 18)
+        returnButton.frame = CGRect(x: max(inset, inset + width - 112), y: 0, width: 112, height: 44)
         scroll.frame = CGRect(x: 0, y: navigationHeight, width: bounds.width, height: max(0, bounds.height - navigationHeight))
-        // Canvas is already inset 4 pt, making 18 pt page margins.
-        let inset: CGFloat = bounds.width < 347 ? 10 : 14
-        let width = max(1, bounds.width - inset * 2)
         var y: CGFloat = 18
         for block in blocks {
             var height = ceil(block.view.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)

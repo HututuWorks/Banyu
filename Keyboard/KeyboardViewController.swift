@@ -32,7 +32,7 @@ final class KeyboardViewController: UIInputViewController {
         diagnostics: { HintDiagnostics.record(stage: $0) }))
     private var subscriptions = Set<AnyCancellable>()
     private var keyboardHeight: NSLayoutConstraint?
-    private var lastLayoutWidth: CGFloat = 0
+    private var lastLayoutViewport: KeyboardStudyLayout.Viewport?
     private var lastHeightObservation = ""
     private var page: KeyboardSurface.Page = .letters
     private var shift: KeyboardSurface.Shift = .lower
@@ -264,7 +264,7 @@ final class KeyboardViewController: UIInputViewController {
         super.viewWillTransition(to: size, with: coordinator)
         updateHeight(for: size.width)
         surface.configure(page: page, shift: shift, returnTitle: returnLabel,
-                          showGlobe: needsInputModeSwitchKey, compact: size.width > 600,
+                          showGlobe: needsInputModeSwitchKey, compact: layoutViewport(for: size.width).compactKeys,
                           returnIsActive: returnIsActive)
     }
 
@@ -284,8 +284,9 @@ final class KeyboardViewController: UIInputViewController {
             }
         }
         let width = view.bounds.width
-        guard width > 0, abs(width - lastLayoutWidth) > 1 else { return }
-        lastLayoutWidth = width
+        let viewport = layoutViewport(for: width)
+        guard width > 0, viewport != lastLayoutViewport else { return }
+        lastLayoutViewport = viewport
         updateHeight(for: width)
         refreshSurface()
     }
@@ -989,7 +990,7 @@ final class KeyboardViewController: UIInputViewController {
         // Keep the pressed delete button alive until touch-up can end repetition.
         guard !isDeleting else { return }
         surface.configure(page: page, shift: shift, returnTitle: returnLabel,
-                          showGlobe: needsInputModeSwitchKey, compact: view.bounds.width > 600,
+                          showGlobe: needsInputModeSwitchKey, compact: layoutViewport(for: view.bounds.width).compactKeys,
                           returnIsActive: returnIsActive)
     }
 
@@ -1001,20 +1002,24 @@ final class KeyboardViewController: UIInputViewController {
             && textDocumentProxy.enablesReturnKeyAutomatically != true
     }
 
+    private func layoutViewport(for width: CGFloat) -> KeyboardStudyLayout.Viewport {
+        let scene = view.window?.windowScene
+        let screen = scene?.screen.fixedCoordinateSpace.bounds
+        let orientation = scene?.effectiveGeometry.interfaceOrientation
+        return KeyboardStudyLayout.viewport(width: width,
+            screenWidth: screen.map { Double($0.width) }, screenHeight: screen.map { Double($0.height) },
+            landscape: orientation.flatMap { $0 == .unknown ? nil : $0.isLandscape },
+            isPad: traitCollection.userInterfaceIdiom == .pad)
+    }
+
     private func updateHeight(for width: CGFloat) {
-        let landscape = width > 600
-        let normalHeight: CGFloat = isChinese
-            ? (usesNineKey ? (landscape ? 211 : 268) : (landscape ? 214 : 263))
-            : (landscape ? 214 : 263)
-        // A keyboard's window grows with this constraint. Derive the learning
-        // space from its screen, otherwise each layout could grow it again.
-        let screenBounds = view.window?.windowScene?.screen.bounds
-        let screenHeight = screenBounds.map { landscape ? min($0.width, $0.height) : max($0.width, $0.height) }
-            ?? (landscape ? 393 : 852)
+        let viewport = layoutViewport(for: width)
+        let normalHeight = viewport.normalHeight(nineKey: usesNineKey)
         let contentHeight = KeyboardStudyLayout.contentHeight(
             normal: normalHeight, expanded: analysisExpanded,
-            screenHeight: screenHeight, landscape: landscape,
-            bottomInset: view.safeAreaInsets.bottom)
+            screenHeight: viewport.screenHeight, landscape: viewport.landscape,
+            bottomInset: view.safeAreaInsets.bottom, isPad: viewport.isPad,
+            keyboardWidth: viewport.width)
         let height = contentHeight + view.safeAreaInsets.bottom
         if let keyboardHeight {
             if abs(keyboardHeight.constant - height) > 1 {

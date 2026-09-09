@@ -221,6 +221,8 @@ def check_project(files: set[str]) -> None:
         for mode, config in target_configs.items():
             settings = {**common[mode]["buildSettings"], **config["buildSettings"]}
             for setting, expected in (("PRODUCT_BUNDLE_IDENTIFIER", bundle_id),
+                                      ("TARGETED_DEVICE_FAMILY", "1,2"),
+                                      ("IPHONEOS_DEPLOYMENT_TARGET", "26.0"),
                                       ("CURRENT_PROJECT_VERSION", versions["BUILD_VERSION"]),
                                       ("MARKETING_VERSION", versions["MARKETING_VERSION"])):
                 if settings.get(setting) != expected:
@@ -235,6 +237,11 @@ def check_project(files: set[str]) -> None:
                     error(info_path, "keyboard entry or fixed layout is inconsistent")
             elif settings.get("ASSETCATALOG_COMPILER_APPICON_NAME") != "AppIcon":
                 error(PROJECT, f"{name}/{mode}: AppIcon is not configured")
+            if not layout and set(info.get("UISupportedInterfaceOrientations~ipad", [])) != {
+                "UIInterfaceOrientationPortrait", "UIInterfaceOrientationPortraitUpsideDown",
+                "UIInterfaceOrientationLandscapeLeft", "UIInterfaceOrientationLandscapeRight",
+            }:
+                error(info_path, "iPad must support all four interface orientations")
         sources, resources = set(), set()
         for phase_id in target["buildPhases"]:
             phase = objects[phase_id]

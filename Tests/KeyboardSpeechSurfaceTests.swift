@@ -679,6 +679,171 @@ private enum SpeechSurfaceChecks {
         surface.onUndoEnglish = nil
     }
 
+    /// One live surface traverses iPad portrait, landscape, a narrow multitasking
+    /// column and back again. This exercises resizing separately from the phone
+    /// fixtures, whose intentional overflow assertions require phone widths.
+    static func checkPadResizing() async throws {
+        let viewports: [(name: String, size: CGSize, normal: CGFloat, study: CGFloat)] = [
+            ("portrait", CGSize(width: 810, height: 1080), 314, 540),
+            ("landscape", CGSize(width: 1080, height: 810), 314, 405),
+            ("split", CGSize(width: 320, height: 810), 263, 360),
+            ("portrait-return", CGSize(width: 810, height: 1080), 314, 540)
+        ]
+        for style in [UIUserInterfaceStyle.light, .dark] {
+            let root = UIView(frame: CGRect(origin: .zero, size: viewports[0].size))
+            let controller = UIViewController()
+            controller.view = root
+            let window = UIWindow(frame: root.frame)
+            window.rootViewController = controller
+            window.overrideUserInterfaceStyle = style
+            let surface = KeyboardSurface(frame: CGRect(x: 0, y: 0, width: 810, height: 314))
+            surface.overrideUserInterfaceStyle = style
+            root.addSubview(surface)
+            window.makeKeyAndVisible()
+            try await Task.sleep(for: .milliseconds(100))
+            var spoken: [String] = []
+            var hostActions = 0
+            surface.onReadAnalysisText = { spoken.append($0) }
+            surface.onAction = { _ in hostActions += 1 }
+            surface.onUseEnglish = { hostActions += 1 }
+            surface.onUndoEnglish = { hostActions += 1 }
+            surface.setInputLanguage(isChinese: true)
+            surface.setHint(text: english, loading: false, isTranslation: true, canRetry: false)
+            surface.setHintAction(.useEnglish)
+            surface.setSpeech(available: true, state: .idle, text: nil, english: english)
+            surface.setAnalysis(available: true, expanded: true, english: english, state: .ready(analysis))
+            var wideLineBreaks: [NSRange]?
+            for viewport in viewports {
+                let prefix = "ipad-\(viewport.name)-\(style == .dark ? "dark" : "light")"
+                root.frame.size = viewport.size
+                // Resize while learning is still open before checking the
+                // collapsed keys: no presentation rebuild may be required.
+                surface.frame.size = CGSize(width: viewport.size.width, height: viewport.study)
+                layout(root, surface)
+                let liveOriginal: StudyReadingTextView = try descendant(surface, "keyboard.analysisOriginal")
+                let liveScroll: UIScrollView = try descendant(surface, "keyboard.analysisScroll")
+                try expect(liveOriginal.text == english && liveOriginal.bounds.width <= min(680, viewport.size.width) &&
+                           liveScroll.contentOffset.y >= 0 &&
+                           liveScroll.contentOffset.y <= max(0, liveScroll.contentSize.height - liveScroll.bounds.height),
+                           "\(prefix): open learning reflows and clamps its existing scroll position during a live resize")
+                surface.frame.size = CGSize(width: viewport.size.width, height: viewport.normal)
+                surface.setAnalysis(available: true, expanded: false, english: english, state: .ready(analysis))
+                surface.configure(page: .letters, shift: .lower, returnTitle: "发送", showGlobe: false, compact: false)
+                for chineseLayout in [KeyboardSurface.ChineseLayout.qwerty, .nineKey] {
+                    surface.frame.size.height = viewport.name == "split" && chineseLayout == .nineKey ? 268 : viewport.normal
+                    surface.setChineseLayout(chineseLayout)
+                    layout(root, surface)
+                    let identifiers = chineseLayout == .qwerty
+                        ? Array("abcdefghijklmnopqrstuvwxyz").map { "keyboard.key.\($0)" }
+                        : (2...9).map { "keyboard.t9.\($0)" }
+                    for identifier in identifiers + ["keyboard.space", "keyboard.return", "keyboard.delete"] {
+                        let key: UIButton = try descendant(surface, identifier)
+                        guard let canvas = key.superview else { throw SpeechSurfaceFailure(message: "Missing key canvas") }
+                        try expect(isVisible(key) && key.bounds.width > 0 && key.bounds.height >= 40 &&
+                                   canvas.bounds.insetBy(dx: -0.01, dy: -0.01).contains(key.frame),
+                                   "\(prefix): \(identifier) remains visible and inside the resized key canvas")
+                        let hit = canvas.hitTest(CGPoint(x: key.frame.midX, y: key.frame.midY), with: nil)
+                        try expect(hit === key || hit?.isDescendant(of: key) == true,
+                                   "\(prefix): \(identifier) retains its own touch target after layout changes")
+                    }
+                    let typingKey: UIButton = try descendant(surface, chineseLayout == .qwerty ? "keyboard.key.q" : "keyboard.t9.2")
+                    let before = hostActions
+                    typingKey.sendActions(for: .touchUpInside)
+                    try expect(hostActions == before + 1, "\(prefix): each keyboard layout still dispatches typing")
+                    if viewport.name != "portrait-return" {
+                        try render(surface, name: prefix + (chineseLayout == .qwerty ? "-26keys" : "-9keys"))
+                    }
+                }
+                surface.setChineseLayout(.qwerty)
+                surface.frame.size.height = viewport.study
+                surface.setAnalysis(available: true, expanded: true, english: english, state: .ready(analysis))
+                layout(root, surface)
+                let original: StudyReadingTextView = try descendant(surface, "keyboard.analysisOriginal")
+                let panel: UIView = try descendant(surface, "keyboard.analysisPanel")
+                let studyScroll: UIScrollView = try descendant(surface, "keyboard.analysisScroll")
+                let header: UIView = try descendant(surface, "keyboard.header")
+                let sourceString = english as NSString
+                let hostActionsBeforeReading = hostActions
+                try expect(original.text == english && original.attributedText.string == english,
+                           "\(prefix): the original survives portrait/landscape/split resizing exactly")
+                try expect(original.bounds.width <= 680 && abs(original.frame.midX - panel.bounds.midX) < 0.5 &&
+                           studyScroll.contentSize.width == studyScroll.bounds.width,
+                           "\(prefix): all reading stays in one centered column without horizontal scrolling")
+                if viewport.size.width >= 810 {
+                    try expect(original.bounds.width == 680, "\(prefix): wide layouts retain a comfortable 680pt reading measure")
+                    let currentBreaks = lineBreaks(in: original)
+                    if let wideLineBreaks {
+                        try expect(currentBreaks == wideLineBreaks, "\(prefix): returning to a wide layout restores identical line breaks")
+                    } else { wideLineBreaks = currentBreaks }
+                }
+                let font = original.attributedText.attribute(.font, at: 0, effectiveRange: nil) as? UIFont
+                let paragraph = original.attributedText.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle
+                try expect(font == UIFont.systemFont(ofSize: 18, weight: .regular) &&
+                           paragraph?.minimumLineHeight == 28 && paragraph?.maximumLineHeight == 28,
+                           "\(prefix): resizing keeps the original 18pt/28pt typography")
+                for identifier in ["keyboard.speechToggle", "keyboard.hintAction", "keyboard.analysisToggle"] {
+                    let button: UIButton = try descendant(surface, identifier)
+                    try expect(isVisible(button) && button.bounds.height == 44 && header.bounds.contains(button.frame),
+                               "\(prefix): sentence controls remain visible in the fixed 44pt toolbar")
+                }
+                let up = sourceString.range(of: "up")
+                original.readWord(at: try characterPoint(in: original, at: up.location))
+                layout(root, surface)
+                let word: UILabel = try descendant(surface, "keyboard.analysisLookupWord")
+                let meaning: UILabel = try descendant(surface, "keyboard.analysisLookupMeaning")
+                try expect(spoken.last == "up" && original.highlightedRange == up && word.text == "up" &&
+                           meaning.text == "与 set 连用，表示搭建",
+                           "\(prefix): resized TextKit coordinates still select, read and explain the exact word")
+                original.selectedRange = sourceString.range(of: "set up an agent platform")
+                original.readSelectedText()
+                layout(root, surface)
+                try expect(spoken.last == "set up an agent platform", "\(prefix): exact phrase reading survives width changes")
+                original.clearSelection()
+                layout(root, surface)
+                let maximum = max(0, studyScroll.contentSize.height - studyScroll.bounds.height)
+                let offset = min(25, maximum)
+                studyScroll.setContentOffset(CGPoint(x: 0, y: offset), animated: false)
+                let frameBeforeRefresh = original.frame
+                surface.setAnalysis(available: true, expanded: true, english: english, state: .ready(analysis))
+                surface.setSpeech(available: true, state: .playing, text: "set up an agent platform", english: english)
+                layout(root, surface)
+                try expect(studyScroll.contentOffset.y == offset && original.frame == frameBeforeRefresh,
+                           "\(prefix): repeated analysis and playback updates preserve reading position and layout")
+                let explanationOffset = studyScroll.contentOffset
+                let showSource: UIButton = try descendant(surface, "keyboard.analysisSource.0")
+                let returnToExplanation: UIButton = try descendant(surface, "keyboard.analysisReturnToExplanation")
+                showSource.sendActions(for: .touchUpInside)
+                layout(root, surface)
+                let sourceRange = sourceString.range(of: "I’d like to")
+                let sourcePoint = try characterPoint(in: original, at: sourceRange.location)
+                try expect(isVisible(returnToExplanation) && original.highlightedRange == sourceRange &&
+                           studyScroll.bounds.contains(original.convert(sourcePoint, to: studyScroll)) &&
+                           abs(returnToExplanation.frame.maxX - original.frame.maxX) < 0.5,
+                           "\(prefix): source focus and its return control stay aligned with the centered reading column")
+                returnToExplanation.sendActions(for: .touchUpInside)
+                layout(root, surface)
+                try expect(studyScroll.contentOffset == explanationOffset,
+                           "\(prefix): returning from source restores the explanation's reading position")
+                studyScroll.setContentOffset(.zero, animated: false)
+                try render(surface, name: prefix + "-study")
+                surface.setAnalysis(available: true, expanded: false, english: english, state: .ready(analysis))
+                surface.frame.size.height = viewport.normal
+                layout(root, surface)
+                surface.frame.size.height = viewport.study
+                surface.setAnalysis(available: true, expanded: true, english: english, state: .ready(analysis))
+                surface.setSpeech(available: true, state: .idle, text: nil, english: english)
+                layout(root, surface)
+                try expect(studyScroll.contentOffset == .zero && original.frame == frameBeforeRefresh &&
+                           original.text == english && original.highlightedRange == nil && hostActions == hostActionsBeforeReading,
+                           "\(prefix): collapse/reopen starts at the complete original without blank geometry or host edits")
+                studyScroll.setContentOffset(CGPoint(x: 0, y: min(40, max(0, studyScroll.contentSize.height - studyScroll.bounds.height))), animated: false)
+            }
+            surface.removeFromSuperview()
+            window.isHidden = true
+            print("iPad resize surface: \(style == .dark ? "dark" : "light") passed")
+        }
+    }
+
     static func run() async throws {
         // Snapshot settled native states instead of UIKit's transient button
         // title crossfades while this harness performs several immediate taps.
@@ -840,6 +1005,8 @@ private enum SpeechSurfaceChecks {
             }
         }
 
+        try await checkPadResizing()
+
         // Repeated controller refreshes must not keep an error floating forever.
         let surface = KeyboardSurface(frame: CGRect(x: 0, y: 0, width: 393, height: 260))
         surface.setHint(text: english, loading: false, isTranslation: true, canRetry: false)
@@ -854,6 +1021,7 @@ private enum SpeechSurfaceChecks {
         let report: [String: Any] = [
             "assertions": assertions,
             "viewports": [320, 393, 430],
+            "iPadResizeViewports": ["810x1080", "1080x810", "320x810", "810x1080"],
             "styles": ["light", "dark"],
             "renderer": "Native Mac Catalyst UIKit. Not an iPhone playback test.",
             "wordHitTesting": "Laid-out UIKit character coordinates through the production point-reading method; no synthesized touch events.",

@@ -22,7 +22,7 @@ jobs:
           git diff --exit-code -- EnglishHintKeyboard.xcodeproj Config
       - name: Core, translation and native pinyin tests
         run: scripts/test.sh
-      - name: Build iPhone app and both keyboard extensions
+      - name: Build universal iPhone and iPad app with both keyboard extensions
         env:
           EHK_CONFIGURATION: Release
         run: scripts/xcode-project.sh build-device CODE_SIGNING_ALLOWED=NO build

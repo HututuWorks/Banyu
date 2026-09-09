@@ -4,7 +4,7 @@
 
 [![Build and test](https://github.com/SciToolsmith/Banyu/actions/workflows/ci.yml/badge.svg)](https://github.com/SciToolsmith/Banyu/actions/workflows/ci.yml)
 
-伴语是一个 iPhone 中文键盘：正常打字时查看英文提示，主动点「用英文」替换对应草稿，也可以展开学习英文用法。主 App 用于试用、管理键盘和配置翻译服务。
+伴语是一个 iPhone / iPad 中文键盘：正常打字时查看英文提示，主动点「用英文」替换对应草稿，也可以展开学习英文用法。主 App 用于试用、管理键盘和配置翻译服务。iPad 适配目前处于测试阶段，真机验收见已知限制。
 
 ## 功能
 
@@ -22,8 +22,8 @@
 ## 开发环境
 
 - macOS 26、完整 Xcode 26.4 或更新版本、Swift 6、Python 3。
-- 目标为 iPhone，最低 iOS 26.0。最新本地验证使用 Xcode 26.6。
-- 当前版本：0.1.0 / Build34。App 与两个键盘扩展必须一起构建。
+- 目标为 iPhone 与 iPad，最低 iOS / iPadOS 26.0。最新本地验证使用 Xcode 26.6。
+- 当前版本：0.1.0 / Build35。App 与两个键盘扩展必须一起构建。
 
 ```sh
 python3 scripts/generate-project.py

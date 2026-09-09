@@ -12,6 +12,7 @@ struct KeyboardStudyLayoutTests {
         try smallAndUnavailableScreens()
         try insetsAreCountedOnce()
         try repeatedLayoutIsStable()
+        try tabletViewports()
         print("PASS: study height — compact geometry, half-screen portrait request with host and system strip reserve, landscape unchanged, small-screen fallback, single safe-area accounting and stable repeated calculations; pure geometry only, not device height negotiation")
     }
 
@@ -109,5 +110,45 @@ struct KeyboardStudyLayoutTests {
         try expect(Set(expandedContentHeights).count == 1,
                    "Re-layout and collapse/reopen must not feed the changing keyboard height back into screen size")
         print("PASS: repeated layout and collapse/reopen return the same screen-based expanded height without growth or shrink loops")
+    }
+
+    private static func tabletViewports() throws {
+        for (width, landscape, screenHeight) in [(810.0, false, 1080.0), (1080.0, true, 810.0)] {
+            let viewport = KeyboardStudyLayout.viewport(width: width, screenWidth: 810,
+                screenHeight: 1080, landscape: landscape, isPad: true)
+            try expect(!viewport.compactKeys && viewport.normalHeight(nineKey: false) == 314
+                && viewport.normalHeight(nineKey: true) == 314,
+                "iPad 8 portrait and landscape retain full-height keys, including nine-key")
+            try expect(viewport.screenHeight == screenHeight, "iPad screen height follows scene orientation")
+            let height = KeyboardStudyLayout.contentHeight(normal: 314, expanded: true,
+                screenHeight: viewport.screenHeight, landscape: viewport.landscape,
+                bottomInset: 0, isPad: true, keyboardWidth: width)
+            try expect(height == floor(screenHeight * 0.5), "Full tablet learning uses half-screen in both orientations")
+            try expect(KeyboardStudyLayout.contentHeight(normal: 314, expanded: false,
+                screenHeight: viewport.screenHeight, landscape: landscape, bottomInset: 0,
+                isPad: true, keyboardWidth: width) == 314, "Collapse restores tablet keys exactly")
+        }
+        let portrait = KeyboardStudyLayout.viewport(width: 320, screenWidth: 810,
+            screenHeight: 1080, landscape: false, isPad: true)
+        let landscape = KeyboardStudyLayout.viewport(width: 320, screenWidth: 810,
+            screenHeight: 1080, landscape: true, isPad: true)
+        try expect(portrait != landscape, "Orientation changes invalidate layout even at an unchanged split-view width")
+        for viewport in [portrait, landscape] {
+            try expect(!viewport.compactKeys && viewport.normalHeight(nineKey: true) == 268,
+                       "Narrow tablet keeps touchable phone-portrait keys")
+            let height = KeyboardStudyLayout.contentHeight(normal: 268, expanded: true,
+                screenHeight: viewport.screenHeight, landscape: viewport.landscape,
+                bottomInset: 20, isPad: true, keyboardWidth: viewport.width)
+            try expect(height == 360, "Narrow tablet reading is bounded without squeezing keys")
+        }
+        let missingScene = KeyboardStudyLayout.viewport(width: 810, screenWidth: nil,
+            screenHeight: nil, landscape: nil, isPad: true)
+        try expect(!missingScene.landscape && !missingScene.compactKeys,
+                   "Detached iPad never mistakes its portrait width for a landscape phone")
+        let phone = KeyboardStudyLayout.viewport(width: 852, screenWidth: nil,
+            screenHeight: nil, landscape: nil, isPad: false)
+        try expect(phone.compactKeys && phone.normalHeight(nineKey: false) == 214,
+                   "Detached phone keeps the existing landscape fallback")
+        print("PASS: iPad 8 both orientations, half-screen study, split-width rotation, narrow/floating bounds and unchanged phone fallback")
     }
 }
