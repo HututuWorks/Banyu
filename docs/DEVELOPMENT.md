@@ -32,7 +32,7 @@ EHK_CONFIGURATION=Release scripts/xcode-project.sh build-device build
 
 ## 在另一台Mac给iPad安装
 
-1. 接受仓库邀请，克隆仓库并切到要验证的提交；使用自己的Apple账号登录Xcode Settings → Accounts。需要完整Xcode 26.4+及匹配的iOS开发组件。
+1. 克隆公开仓库 `https://github.com/HututuWorks/Banyu.git` 并切到要验证的提交；使用自己的Apple账号登录Xcode Settings → Accounts。需要完整Xcode 26.4+及匹配的iOS开发组件。
 2. 用数据线连接iPad，在设备上信任电脑；设备最低iPadOS 26.0。按Xcode要求在设备「设置 → 隐私与安全性」启用开发者模式并完成重启确认。
 3. 打开根目录 `EnglishHintKeyboard.xcodeproj`，为App、26键扩展和九宫格扩展三个Target选择同一个Team，启用Automatically manage signing。或者配置被忽略的 `Config/Local.xcconfig` 中的DEVELOPMENT_TEAM。
 4. 选择 `EnglishHintKeyboard` Scheme 和连接的iPad，点击Run。由Xcode为这台设备创建签名并安装，不要把其他人的开发IPA当成通用安装包。若提示Bundle ID不可用，需要派生一套独立的App/两个扩展ID并同步钥匙串组；只改单个Target会导致配置共享或安装失败，先保留报错交给维护者处理。

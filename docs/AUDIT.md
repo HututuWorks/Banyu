@@ -1,5 +1,11 @@
 # 工程审查 · 0.1.0 (35)
 
+## 开源发布准备 · 2026-10-09
+
+为 `HututuWorks/Banyu` 添加项目 MIT 许可证；第三方许可证、固定来源与本地补丁说明保持原有归属。无签名 CI 构建包在 App 之外附带 `LICENSE` 与 `THIRD_PARTY_NOTICES.md`，再计算最终包的校验值。
+
+本机仓库检查通过。Xcode 26.6 位于外置卷，通过 `EHK_XCODE_APP` 显式选用后，首套回归的 Swift 编译器以 Trace/BPT trap 退出；本机未完成测试。这两项以本次提交的 GitHub Actions 离线回归与完整 Release 构建结果为准，不将先前构建记录当成本次验证。App、键盘行为与版本号未改动。
+
 ## Build35：iPad设备与布局适配
 
 App与两个键盘扩展同步为iPhone/iPad通用目标，保持既有bundle ID、模块名、图标、签名组和26.0最低版本。新增iPad四方向配置；工程检查器同时检查三个目标的设备族、最低系统与App方向，避免生成器或单个扩展漏配。
@@ -111,7 +117,7 @@ App与两个键盘扩展同步为iPhone/iPad通用目标，保持既有bundle ID
 - 分析数据177项检查；分析会话13组37断言；键盘控制器39项检查。
 - 主App真实Mac Catalyst渲染18状态、117项检查，覆盖浅深色、小屏和辅助功能布局分支；编译后的原品牌资产加载成功。不是iPhone截图或实际iPhone大字验证。
 - 仓库检查覆盖目标/源码/资源引用、版本、图标、生成项目一致性、忽略规则和高置信密钥特征。特征扫描不构成所有潜在敏感信息的保证。
-- [GitHub Actions首次独立构建](https://github.com/SciToolsmith/Banyu/actions/runs/34181573629)已通过全部检查、八套测试及无签名Release构建。App和两个扩展均为Build28，图标与品牌资源存在，Release无调试诊断写入器。构建包校验值已核对；CI保留7天产物供本机签名。后续提交以对应Actions记录为准。
+- [GitHub Actions首次独立构建](https://github.com/HututuWorks/Banyu/actions/runs/34181573629)已通过全部检查、八套测试及无签名Release构建。App和两个扩展均为Build28，图标与品牌资源存在，Release无调试诊断写入器。构建包校验值已核对；CI保留7天产物供本机签名。后续提交以对应Actions记录为准。
 - 本机Xcode首次Release构建在asset catalog阶段因缺少模拟器运行时失败；系统盘空间不足以安装该组件。没有因此删除用户其他文件或降低工程目标版本。
 
 AOSP旧C++代码仍有整数宽度转换警告；这次保留算法和字典来源，未为消除警告添加未经验证的转换。已通过真实词典的内存/未定义行为检查，不将其描述成现代输入法质量保证。

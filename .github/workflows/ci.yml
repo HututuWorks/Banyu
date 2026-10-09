@@ -30,6 +30,7 @@ jobs:
         run: |
           mkdir -p build/artifacts
           ditto -c -k --keepParent build/Products/Release-iphoneos/EnglishHintKeyboard.app build/artifacts/Banyu-unsigned.zip
+          /usr/bin/zip -j build/artifacts/Banyu-unsigned.zip LICENSE THIRD_PARTY_NOTICES.md
           shasum -a 256 build/artifacts/Banyu-unsigned.zip > build/artifacts/SHA256SUMS
       - name: Save unsigned app
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

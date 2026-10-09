@@ -2,7 +2,7 @@
 <h1 align="center">伴语 · Banyu</h1>
 <p align="center">照常输入，英文随行。</p>
 
-[![Build and test](https://github.com/SciToolsmith/Banyu/actions/workflows/ci.yml/badge.svg)](https://github.com/SciToolsmith/Banyu/actions/workflows/ci.yml)
+[![Build and test](https://github.com/HututuWorks/Banyu/actions/workflows/ci.yml/badge.svg)](https://github.com/HututuWorks/Banyu/actions/workflows/ci.yml)
 
 伴语是一个 iPhone / iPad 中文键盘：正常打字时查看英文提示，主动点「用英文」替换对应草稿，也可以展开学习英文用法。主 App 用于试用、管理键盘和配置翻译服务。iPad 适配目前处于测试阶段，真机验收见已知限制。
 
@@ -63,4 +63,6 @@ EHK_CONFIGURATION=Release scripts/xcode-project.sh build-device CODE_SIGNING_ALL
 
 API Key 只保存在设备共享钥匙串。源码、测试、构建产物和 GitHub 仓库不包含用户密钥、聊天记录或真机诊断数据。
 
-本项目尚未指定整体开源许可；第三方部分分别遵守其原许可，见 [第三方声明](THIRD_PARTY_NOTICES.md)。
+## 许可证
+
+本项目自有代码与文档采用 [MIT 许可证](LICENSE)。第三方代码与资源保留各自的原始许可，见 [第三方声明](THIRD_PARTY_NOTICES.md)。CI 提供的无签名构建包也附带许可证与第三方声明；安装需自行签名，详见 [开发指南](docs/DEVELOPMENT.md)。
